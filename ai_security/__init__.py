@@ -4,6 +4,8 @@ AI Security Teams - LangChain Deep Agents skeleton package.
 
 from __future__ import annotations
 
+__version__ = "0.2.0"
+
 import warnings
 
 # LangChain 仍会间接使用 pydantic.v1；在 Python 3.14+ 上 pydantic 会发出此 UserWarning。

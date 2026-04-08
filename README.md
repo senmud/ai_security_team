@@ -1,5 +1,7 @@
 # AI Security Teams – LangChain Deep Agents 实现骨架
 
+**版本：0.2.0**（与 `ai_security.__version__` 同步）
+
 本仓库基于文档 `AI_Security_Teams_Architecture_and_Benchmarking.md` 与 `AI_Security_Teams_System_Architecture.md`，使用 **LangChain AI 官方 [`deepagents`](https://pypi.org/project/deepagents/) 包**（`create_deep_agent`）作为核心 harness，承载安全运营场景中的工具调用与多步推理；`ai_security/agents.py` 对其做了安全领域封装。
 
 目前代码只实现了**可运行的最小骨架**，方便后续逐步扩展到生产级能力。
