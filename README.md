@@ -1,6 +1,6 @@
 # AI Security Teams – LangChain Deep Agents 实现骨架
 
-**版本：0.2.0**（与 `ai_security.__version__` 同步）
+**版本：0.3.0**（与 `ai_security.__version__` 同步）
 
 本仓库基于文档 `AI_Security_Teams_Architecture_and_Benchmarking.md` 与 `AI_Security_Teams_System_Architecture.md`，使用 **LangChain AI 官方 [`deepagents`](https://pypi.org/project/deepagents/) 包**（`create_deep_agent`）作为核心 harness，承载安全运营场景中的工具调用与多步推理；`ai_security/agents.py` 对其做了安全领域封装。
 
@@ -77,5 +77,36 @@ python -m ai_security.feishu_socket_bot
 ```
 
 > 说明：飞书长连接模式要求收到事件后 **3 秒内处理完成**，否则会重推。当前实现用后台线程执行 LLM 并回复，以避免阻塞 ACK；生产环境建议加队列与限流。
+
+### 多 Agent 机制（子进程派发）
+
+`ai_security/feishu_socket_bot.py` 内置一个轻量的多 agent 机制，用于处理**复杂/耗时/不好评估**的请求：
+
+- **复杂度预判**：收到用户消息后，会根据文本长度、是否多段/多问句、是否包含 URL 以及关键词（如“分析/排查/设计/方案/评估”等）粗略判断任务复杂度。
+  - 复杂或不确定任务：派生子 agent 执行（子进程）。
+  - 简单任务：沿用主 agent 的同步流式执行路径。
+- **通信通道**：主进程与子进程通过队列回传结果，子任务成功/失败都会回传，主 agent 再通过飞书回复用户。
+- **任务列表**：主 agent 维护一个运行中任务列表，包含：
+  - 任务 ID
+  - 描述（10 字以内）
+  - 已运行时间（秒）
+- **子 agent 计划与状态同步**：子 agent 在执行过程中会把 `write_todos` 计划与状态通过“update”消息流式同步给主 agent：
+  - 主 agent 在任务项下方展示最近若干条计划轨迹（如“进行中/已完成/失败”等）。
+- **超时策略**：任务超过 **10 分钟**会被强制终止（kill），并按失败处理。
+- **即时反馈**：派生子 agent 后，机器人会立刻回复“正在处理”并展示当前任务列表。
+
+可选控制项：
+
+- `FEISHU_FORCE_MULTI_AGENT=1`：强制所有请求走多 agent 路径（便于联调/压测）。
+
+### /task 命令
+
+在飞书对话中发送：
+
+```text
+/task
+```
+
+机器人会返回当前运行中任务列表（含任务 ID、描述、已运行时间）。
 
 

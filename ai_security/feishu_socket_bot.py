@@ -14,8 +14,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 import threading
-from typing import Optional
+import time
+import multiprocessing as mp
+from dataclasses import dataclass
+from typing import Optional, Callable
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
@@ -25,6 +29,8 @@ from langchain_openai import ChatOpenAI
 
 from .agents import create_security_deep_agent
 from .feishu_client import FeishuClient, FeishuCredentials
+
+TASK_TIMEOUT_SECONDS = 600
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -101,6 +107,222 @@ def _extract_text_from_chunk_content(content: object) -> str:
                 out.append(str(block.get("text", "")))
         return "".join(out)
     return str(content)
+
+
+def _short_desc(text: str, max_len: int = 10) -> str:
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    if not raw:
+        return "空任务"
+    return raw[:max_len]
+
+
+def _should_dispatch_multi_agent(text: str) -> tuple[bool, str]:
+    t = (text or "").strip()
+    force = (_env("FEISHU_FORCE_MULTI_AGENT", "0") or "0").lower() not in ("0", "false", "no")
+    if force:
+        return True, "force_env"
+
+    # 明确的简单问题：强制走主 agent（避免无意义的子进程开销）
+    simple_patterns = [
+        r"^(你好|在吗|hi|hello|ping|test|ok|好的|收到|谢谢|thanks)[\s!！。]*$",
+        r"^\s*(1\+1|2\+2|3\+3)\s*=?\s*\d*\s*$",
+    ]
+    for pat in simple_patterns:
+        if re.search(pat, t, flags=re.IGNORECASE):
+            return False, "simple_whitelist"
+
+    # 很短且无明显复杂信号的问句，倾向主 agent
+    if len(t) <= 30:
+        qn = t.count("?") + t.count("？")
+        has_url = any(x in t for x in ("http://", "https://", "github.com", "docs.", "console"))
+        if qn <= 1 and not has_url:
+            return False, "short_simple"
+    if len(t) >= 80:
+        return True, "len>=80"
+    # 多段/多问题往往不好评估耗时
+    if "\n" in t or t.count("?") + t.count("？") >= 2:
+        return True, "multi_part"
+    if any(x in t for x in ("http://", "https://", "github.com", "docs.", "console")):
+        return True, "has_url"
+    hard_keywords = [
+        "分析",
+        "排查",
+        "设计",
+        "方案",
+        "架构",
+        "优化",
+        "评估",
+        "调研",
+        "对比",
+        "复杂",
+        "不确定",
+        "why",
+        "root cause",
+    ]
+    lowered = t.lower()
+    if any(k in t or k in lowered for k in hard_keywords):
+        return True, "keyword"
+    return False, "simple"
+
+
+def _run_child_agent_task(task_id: str, user_text: str, out_q: "mp.Queue[dict[str, str]]") -> None:
+    """
+    子进程执行函数：重建 LLM/Agent，执行任务并通过 Queue 回传结果。
+    """
+    try:
+        llm = _build_llm()
+        agent = create_security_deep_agent(llm)
+        answer_chunks: list[str] = []
+        plan_lines: list[str] = []
+        for part in agent.stream(
+            {"messages": [{"role": "user", "content": user_text}]},
+            stream_mode=["tasks", "updates", "messages"],
+            version="v2",
+        ):
+            line = _plan_line_from_part(part)
+            if line:
+                plan_lines.append(line)
+                for one in str(line).splitlines():
+                    one = one.strip()
+                    if one:
+                        out_q.put({"task_id": task_id, "status": "update", "plan_line": one})
+                continue
+            if part.get("type") != "messages":
+                continue
+            msg, _meta = part["data"]  # type: ignore[index]
+            if isinstance(msg, AIMessageChunk):
+                chunk = _extract_text_from_chunk_content(msg.content)
+                if chunk:
+                    answer_chunks.append(chunk)
+        reply = "".join(answer_chunks).strip() or "子Agent未生成有效回复。"
+        out_q.put({"task_id": task_id, "status": "success", "reply": reply})
+    except Exception as e:  # noqa: BLE001
+        out_q.put({"task_id": task_id, "status": "failed", "error": str(e)})
+
+
+@dataclass
+class RunningTask:
+    task_id: str
+    description: str
+    started_at: float
+    status: str
+    plan_by_key: dict[str, str]
+    message_id: str
+    chat_id: Optional[str]
+    process: "mp.Process"
+    queue: "mp.Queue[dict[str, str]]"
+
+
+class TaskRegistry:
+    def __init__(self, on_finish: Callable[[str, str, str, Optional[str], str], None]) -> None:
+        self._tasks: dict[str, RunningTask] = {}
+        self._lock = threading.Lock()
+        self._on_finish = on_finish
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
+
+    def add(self, message_id: str, chat_id: Optional[str], user_text: str) -> str:
+        task_id = uuid.uuid4().hex[:8]
+        q: "mp.Queue[dict[str, str]]" = mp.Queue()
+        p = mp.Process(target=_run_child_agent_task, args=(task_id, user_text, q), daemon=True)
+        task = RunningTask(
+            task_id=task_id,
+            description=_short_desc(user_text),
+            started_at=time.time(),
+            status="running",
+            plan_by_key={},
+            message_id=message_id,
+            chat_id=chat_id,
+            process=p,
+            queue=q,
+        )
+        with self._lock:
+            self._tasks[task_id] = task
+        try:
+            p.start()
+        except Exception as e:  # noqa: BLE001
+            with self._lock:
+                self._tasks.pop(task_id, None)
+            raise RuntimeError(f"spawn child agent failed: {e!s}") from e
+        return task_id
+
+    def list_lines(self) -> list[str]:
+        now = time.time()
+        with self._lock:
+            items = list(self._tasks.values())
+        if not items:
+            return ["- （无运行中任务）"]
+        lines: list[str] = []
+        for t in items:
+            elapsed = int(now - t.started_at)
+            header = f"- {t.task_id} | {t.description} | {elapsed}s | {t.status}"
+            lines.append(header)
+            if t.plan_by_key:
+                vals = list(t.plan_by_key.values())
+                for pl in vals[-6:]:
+                    lines.append(f"  {pl}")
+        return lines
+
+    def _finalize(self, task: RunningTask, status: str, payload: str) -> None:
+        with self._lock:
+            self._tasks.pop(task.task_id, None)
+        try:
+            if task.process.is_alive():
+                task.process.terminate()
+        except Exception:
+            pass
+        self._on_finish(task.task_id, status, payload, task.chat_id, task.message_id)
+
+    def _monitor_loop(self) -> None:
+        while not self._stop.is_set():
+            time.sleep(1)
+            now = time.time()
+            with self._lock:
+                tasks = list(self._tasks.values())
+            for task in tasks:
+                # 1) 强制超时 kill
+                if now - task.started_at > TASK_TIMEOUT_SECONDS:
+                    try:
+                        if task.process.is_alive():
+                            task.process.terminate()
+                    except Exception:
+                        pass
+                    self._finalize(task, "failed", "任务执行超过10分钟，已强制终止。")
+                    continue
+                # 2) 子进程回传结果
+                try:
+                    msg = task.queue.get_nowait()
+                except Exception:
+                    msg = None
+                if msg:
+                    kind = msg.get("status")
+                    if kind == "update":
+                        line = str(msg.get("plan_line") or "").strip()
+                        parsed = _plan_key_and_normalized_line(line)
+                        if parsed:
+                            key, normalized = parsed
+                            with self._lock:
+                                cur = self._tasks.get(task.task_id)
+                                if cur:
+                                    cur.plan_by_key[key] = normalized
+                                    cur.status = "running"
+                    elif kind == "success":
+                        with self._lock:
+                            cur = self._tasks.get(task.task_id)
+                            if cur:
+                                cur.status = "success"
+                        self._finalize(task, "success", msg.get("reply") or "")
+                    else:
+                        with self._lock:
+                            cur = self._tasks.get(task.task_id)
+                            if cur:
+                                cur.status = "failed"
+                        self._finalize(task, "failed", msg.get("error") or "子Agent执行失败")
+                    continue
+                # 3) 子进程异常退出但未回传
+                if not task.process.is_alive():
+                    self._finalize(task, "failed", "子Agent异常退出（未返回结果）。")
 
 
 def _plan_line_from_part(part: dict[str, object]) -> str | None:
@@ -180,6 +402,27 @@ def _render_plan_todos(todos: list[tuple[str, str]]) -> list[str]:
     return lines
 
 
+def _plan_key_and_normalized_line(line: str) -> tuple[str, str] | None:
+    """
+    将计划轨迹里的单行 todo 归一化成 (key, normalized_line)。
+
+    用 key 替换旧状态，避免同一 todo 在任务列表中重复追加。
+    """
+    s = (line or "").strip()
+    if not s.startswith("- "):
+        return None
+
+    body = s[2:].strip()
+    if body.startswith(("✅", "🔄", "⏳", "❌")):
+        body = body[1:].strip()
+
+    key = body.replace("~~", "")
+    key = re.sub(r"（[^）]*）\s*$", "", key).strip()
+    if not key:
+        return None
+    return key, s
+
+
 def _format_markdown_for_feishu(text: str) -> str:
     """
     将模型原始 Markdown 调整为飞书更稳定的 lark_md 展示格式：
@@ -219,6 +462,51 @@ def main() -> None:
     agent = create_security_deep_agent(llm)
     feishu = _build_feishu_client()
 
+    def _send_with_mode(
+        *,
+        message_id: str,
+        chat_id: Optional[str],
+        out: str,
+        send_mode: str,
+        render_mode: str,
+    ) -> None:
+        use_markdown = render_mode in ("markdown", "md", "interactive")
+        if send_mode == "reply":
+            if use_markdown:
+                feishu.reply_markdown(message_id=message_id, markdown=out)
+            else:
+                feishu.reply_text(message_id=message_id, text=out)
+        else:
+            if chat_id:
+                if use_markdown:
+                    feishu.send_markdown_chat(chat_id=chat_id, markdown=out)
+                else:
+                    feishu.send_text_chat(chat_id=chat_id, text=out)
+            else:
+                if use_markdown:
+                    feishu.reply_markdown(message_id=message_id, markdown=out)
+                else:
+                    feishu.reply_text(message_id=message_id, text=out)
+
+    send_mode = (_env("FEISHU_SEND_MODE", "send") or "send").lower()
+    render_mode = (_env("FEISHU_RENDER_MODE", "markdown") or "markdown").lower()
+
+    def _notify_task_finish(task_id: str, status: str, payload: str, chat_id: Optional[str], message_id: str) -> None:
+        if status == "success":
+            reply = _format_markdown_for_feishu(payload or "任务完成，但无有效输出。")
+            text = f"任务 {task_id} 已完成：\n\n{reply}"
+        else:
+            text = f"任务 {task_id} 执行失败：{payload}"
+        _send_with_mode(
+            message_id=message_id,
+            chat_id=chat_id,
+            out=text,
+            send_mode=send_mode,
+            render_mode=render_mode,
+        )
+
+    registry = TaskRegistry(on_finish=_notify_task_finish)
+
     def do_p2_im_message_receive_v1(data: P2ImMessageReceiveV1) -> None:
         print("[FeishuSocketBot] received im.message.receive_v1 event", flush=True)
         message_id, chat_id, text = _extract_context_from_event(data)
@@ -227,28 +515,40 @@ def main() -> None:
             print("[FeishuSocketBot] no valid text to handle, skip.", flush=True)
             return
 
-        send_mode = (_env("FEISHU_SEND_MODE", "send") or "send").lower()
-        render_mode = (_env("FEISHU_RENDER_MODE", "markdown") or "markdown").lower()
-
         def _send_text(out: str) -> None:
-            use_markdown = render_mode in ("markdown", "md", "interactive")
-            if send_mode == "reply":
-                if use_markdown:
-                    feishu.reply_markdown(message_id=message_id, markdown=out)
-                else:
-                    feishu.reply_text(message_id=message_id, text=out)
+            _send_with_mode(
+                message_id=message_id,
+                chat_id=chat_id,
+                out=out,
+                send_mode=send_mode,
+                render_mode=render_mode,
+            )
+
+        # /task 命令：查看运行中任务列表
+        if text.strip().lower().startswith("/task"):
+            lines = registry.list_lines()
+            _send_text("运行中任务列表：\n" + "\n".join(lines))
+            return
+
+        # 复杂任务：派生子 agent 执行，并先返回任务列表
+        dispatch, reason = _should_dispatch_multi_agent(text)
+        print(f"[FeishuSocketBot] dispatch_decision={dispatch}, reason={reason}, len={len(text)}", flush=True)
+        if dispatch:
+            try:
+                task_id = registry.add(message_id=message_id, chat_id=chat_id, user_text=text)
+            except Exception as e:  # noqa: BLE001
+                _send_text(f"子Agent派发失败，改用主Agent处理：{e!s}")
+                dispatch = False
             else:
-                if chat_id:
-                    if use_markdown:
-                        feishu.send_markdown_chat(chat_id=chat_id, markdown=out)
-                    else:
-                        feishu.send_text_chat(chat_id=chat_id, text=out)
-                else:
-                    print("[FeishuSocketBot] missing chat_id, fallback to reply", flush=True)
-                    if use_markdown:
-                        feishu.reply_markdown(message_id=message_id, markdown=out)
-                    else:
-                        feishu.reply_text(message_id=message_id, text=out)
+                lines = registry.list_lines()
+                _send_text(
+                    "请求较复杂，已派生子Agent处理。\n"
+                    f"原因: {reason}\n"
+                    f"任务ID: {task_id}\n\n"
+                    "运行中任务列表：\n"
+                    + "\n".join(lines)
+                )
+                return
 
         # 飞书要求 3 秒内处理完，否则会重推；这里用后台线程异步回复，避免阻塞 ACK。
         def _work() -> None:
