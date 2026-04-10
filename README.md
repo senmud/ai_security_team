@@ -1,6 +1,6 @@
 # AI Security Teams – LangChain Deep Agents 实现骨架
 
-**版本：0.3.0**（与 `ai_security.__version__` 同步）
+**版本：0.4.0**（与 `ai_security.__version__` 同步）
 
 本仓库基于文档 `AI_Security_Teams_Architecture_and_Benchmarking.md` 与 `AI_Security_Teams_System_Architecture.md`，使用 **LangChain AI 官方 [`deepagents`](https://pypi.org/project/deepagents/) 包**（`create_deep_agent`）作为核心 harness，承载安全运营场景中的工具调用与多步推理；`ai_security/agents.py` 对其做了安全领域封装。
 
@@ -38,8 +38,9 @@ python -m ai_security.demo_run
 | **读写文件 / 目录检索** | `deepagents` 内置 `ls`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`；默认通过 **`LocalShellBackend`** 映射到 `agent_workspace/`（`virtual_mode=True`）。 |
 | **Shell 执行** | 内置工具 **`execute`**；需 Backend 实现 `SandboxBackendProtocol`，`LocalShellBackend` 会在本机用户权限下执行命令。**仅限可信环境**；生产请换隔离沙箱后端。 |
 | **Web 搜索** | 扩展工具 **`web_search`**（`ddgs`），已并入 `create_security_deep_agent` 的 `tools`。 |
+| **可安装扩展 Skills** | 见 `ai_security/skill_registry.py`：已安装技能放在 `<agent_workspace>/skills/installed/<skill_id>/`（可用环境变量 **`AI_SECURITY_SKILLS_DIR`** 覆盖根目录），通过 `manifest.json` + `tool.py`（导出 `get_tools()`）在运行时加载为 LangChain Tool，并与默认工具合并。内置示例目录为 `ai_security/skill_catalog/hello_echo`。 |
 
-`demo_run` 会构建 **Deep Agent**（`CompiledStateGraph`），合并上述内置能力与 `ai_security/skills.py` 中的扩展工具。**输出为流式**：`ChatOpenAI(streaming=True)` + `graph.stream(..., stream_mode="messages", version="v2")`。
+`demo_run` 会构建 **Deep Agent**（`CompiledStateGraph`），合并上述内置能力、`ai_security/skills.py` 中的扩展工具，以及**当前已安装的扩展 Skills**。**输出为流式**：`ChatOpenAI(streaming=True)` + `graph.stream(..., stream_mode="messages", version="v2")`。
 
 更多架构细节请参考：
 
@@ -90,23 +91,24 @@ python -m ai_security.feishu_socket_bot
   - 任务 ID
   - 描述（10 字以内）
   - 已运行时间（秒）
-- **子 agent 计划与状态同步**：子 agent 在执行过程中会把 `write_todos` 计划与状态通过“update”消息流式同步给主 agent：
-  - 主 agent 在任务项下方展示最近若干条计划轨迹（如“进行中/已完成/失败”等）。
+- **子 agent 计划与状态同步**：子 agent 在执行过程中会把 `write_todos` 渲染出的**整段计划快照**通过“update”消息同步给主 agent；**每次更新用新快照整体替换旧快照**（不再按条目 key 合并去重）。
+  - 主 agent 在任务项下方展示当前快照中的计划行（如“进行中/已完成/失败”等）。
 - **超时策略**：任务超过 **10 分钟**会被强制终止（kill），并按失败处理。
 - **即时反馈**：派生子 agent 后，机器人会立刻回复“正在处理”并展示当前任务列表。
+- **主 agent 每次请求重建**：非多 agent 路径下，每次用户消息会重新构建 Deep Agent，以便**新安装的扩展 Skills**立即生效。
 
 可选控制项：
 
 - `FEISHU_FORCE_MULTI_AGENT=1`：强制所有请求走多 agent 路径（便于联调/压测）。
 
-### /task 命令
+### 飞书命令：`/task`、`/skills`、`/skill`
 
-在飞书对话中发送：
+**`/task`** — 查看运行中任务列表（任务 ID、描述、已运行秒数，以及子 agent 当前的计划快照）。
 
-```text
-/task
-```
+**`/skills`** — 列出已安装的扩展 Skills：**名称、版本、功能概述**（来自各技能目录下的 `manifest.json`）。
 
-机器人会返回当前运行中任务列表（含任务 ID、描述、已运行时间）。
+**`/skill install <技能ID>`** — 从仓库内置的 `ai_security/skill_catalog/<技能ID>/` 复制到已安装目录（例如先安装示例：`/skill install hello_echo`）。
+
+**`/skill`** — 简要说明上述命令。
 
 

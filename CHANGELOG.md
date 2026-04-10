@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 - 2026-04-10
+
+- Extension Skills registry (`ai_security/skill_registry.py`): install from built-in `skill_catalog` into `agent_workspace/skills/installed/`, optional `AI_SECURITY_SKILLS_DIR`, merge `get_tools()` output into `default_security_tools()`.
+- Feishu bot: `/skills` lists installed skills (name, version, summary); `/skill install <id>` and `/skill` help; main agent recreated per message so new skills apply without restart.
+- Multi-agent task progress: store a single **plan snapshot** per running task; each child `update` **replaces** the previous snapshot (no per-line key map).
+
 ## 0.3.0 - 2026-04-09
 
 - Add multi-agent dispatch for Feishu Socket Mode bot:
