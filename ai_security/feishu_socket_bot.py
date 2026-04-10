@@ -29,6 +29,7 @@ from langchain_openai import ChatOpenAI
 
 from .agents import create_security_deep_agent
 from .feishu_client import FeishuClient, FeishuCredentials
+from .skill_registry import format_skills_list_markdown, install_skill_from_catalog
 
 TASK_TIMEOUT_SECONDS = 600
 
@@ -182,10 +183,9 @@ def _run_child_agent_task(task_id: str, user_text: str, out_q: "mp.Queue[dict[st
             line = _plan_line_from_part(part)
             if line:
                 plan_lines.append(line)
-                for one in str(line).splitlines():
-                    one = one.strip()
-                    if one:
-                        out_q.put({"task_id": task_id, "status": "update", "plan_line": one})
+                snapshot = str(line).strip()
+                if snapshot:
+                    out_q.put({"task_id": task_id, "status": "update", "plan_text": snapshot})
                 continue
             if part.get("type") != "messages":
                 continue
@@ -206,7 +206,8 @@ class RunningTask:
     description: str
     started_at: float
     status: str
-    plan_by_key: dict[str, str]
+    # 子 Agent 最近一次 write_todos 的完整计划快照（每次更新整体替换）
+    plan_snapshot: str
     message_id: str
     chat_id: Optional[str]
     process: "mp.Process"
@@ -231,7 +232,7 @@ class TaskRegistry:
             description=_short_desc(user_text),
             started_at=time.time(),
             status="running",
-            plan_by_key={},
+            plan_snapshot="",
             message_id=message_id,
             chat_id=chat_id,
             process=p,
@@ -258,10 +259,11 @@ class TaskRegistry:
             elapsed = int(now - t.started_at)
             header = f"- {t.task_id} | {t.description} | {elapsed}s | {t.status}"
             lines.append(header)
-            if t.plan_by_key:
-                vals = list(t.plan_by_key.values())
-                for pl in vals[-6:]:
-                    lines.append(f"  {pl}")
+            if t.plan_snapshot:
+                for pl in t.plan_snapshot.splitlines():
+                    pl = pl.strip()
+                    if pl:
+                        lines.append(f"  {pl}")
         return lines
 
     def _finalize(self, task: RunningTask, status: str, payload: str) -> None:
@@ -298,14 +300,12 @@ class TaskRegistry:
                 if msg:
                     kind = msg.get("status")
                     if kind == "update":
-                        line = str(msg.get("plan_line") or "").strip()
-                        parsed = _plan_key_and_normalized_line(line)
-                        if parsed:
-                            key, normalized = parsed
+                        snap = str(msg.get("plan_text") or "").strip()
+                        if snap:
                             with self._lock:
                                 cur = self._tasks.get(task.task_id)
                                 if cur:
-                                    cur.plan_by_key[key] = normalized
+                                    cur.plan_snapshot = snap
                                     cur.status = "running"
                     elif kind == "success":
                         with self._lock:
@@ -402,27 +402,6 @@ def _render_plan_todos(todos: list[tuple[str, str]]) -> list[str]:
     return lines
 
 
-def _plan_key_and_normalized_line(line: str) -> tuple[str, str] | None:
-    """
-    将计划轨迹里的单行 todo 归一化成 (key, normalized_line)。
-
-    用 key 替换旧状态，避免同一 todo 在任务列表中重复追加。
-    """
-    s = (line or "").strip()
-    if not s.startswith("- "):
-        return None
-
-    body = s[2:].strip()
-    if body.startswith(("✅", "🔄", "⏳", "❌")):
-        body = body[1:].strip()
-
-    key = body.replace("~~", "")
-    key = re.sub(r"（[^）]*）\s*$", "", key).strip()
-    if not key:
-        return None
-    return key, s
-
-
 def _format_markdown_for_feishu(text: str) -> str:
     """
     将模型原始 Markdown 调整为飞书更稳定的 lark_md 展示格式：
@@ -459,7 +438,6 @@ def main() -> None:
         raise RuntimeError("FEISHU_APP_ID and FEISHU_APP_SECRET are required")
 
     llm = _build_llm()
-    agent = create_security_deep_agent(llm)
     feishu = _build_feishu_client()
 
     def _send_with_mode(
@@ -524,8 +502,32 @@ def main() -> None:
                 render_mode=render_mode,
             )
 
+        tstrip = text.strip()
+        tlower = tstrip.lower()
+
+        # /skills：列出已安装扩展 Skills
+        if tlower == "/skills" or tlower.startswith("/skills "):
+            _send_text(format_skills_list_markdown())
+            return
+
+        # /skill install <id>：从内置 catalog 安装
+        m_install = re.match(r"^/skill\s+install\s+(\S+)\s*$", tstrip, flags=re.IGNORECASE)
+        if m_install:
+            sid = m_install.group(1).strip()
+            ok, msg = install_skill_from_catalog(sid)
+            _send_text(msg if ok else f"安装失败：{msg}")
+            return
+
+        if tlower == "/skill" or tlower.startswith("/skill "):
+            _send_text(
+                "Skill 命令：\n"
+                "- `/skills` — 列出已安装技能（名称、版本、概述）\n"
+                "- `/skill install <技能ID>` — 从内置目录安装（例如 `hello_echo`）"
+            )
+            return
+
         # /task 命令：查看运行中任务列表
-        if text.strip().lower().startswith("/task"):
+        if tlower.startswith("/task"):
             lines = registry.list_lines()
             _send_text("运行中任务列表：\n" + "\n".join(lines))
             return
@@ -554,6 +556,7 @@ def main() -> None:
         def _work() -> None:
             try:
                 print("[FeishuSocketBot] invoking agent...", flush=True)
+                agent = create_security_deep_agent(llm)
                 answer_chunks: list[str] = []
                 plan_lines: list[str] = []
                 plan_stream = (_env("FEISHU_PLAN_STREAM", "1") or "1").lower() not in ("0", "false", "no")

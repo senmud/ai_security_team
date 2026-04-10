@@ -24,6 +24,15 @@ from langgraph.graph.state import CompiledStateGraph
 
 from .skills import get_agent_workspace_dir, web_search
 
+
+def _installed_skill_tools() -> List[BaseTool]:
+    try:
+        from .skill_registry import load_installed_skill_tools
+
+        return load_installed_skill_tools()
+    except Exception:
+        return []
+
 SECURITY_DEEP_SYSTEM_PROMPT = """你是企业安全运营「AI Security Teams」中的 Deep Agent 协调者。
 
 ## 你已具备的能力
@@ -69,7 +78,13 @@ def deep_entity_trace(seed: str) -> str:
 
 def default_security_tools() -> List[BaseTool]:
     """自定义工具列表（会与 deepagents 内置工具合并）。"""
-    return [threat_feed_connector, log_analyzer, deep_entity_trace, web_search]
+    return [
+        threat_feed_connector,
+        log_analyzer,
+        deep_entity_trace,
+        web_search,
+        *_installed_skill_tools(),
+    ]
 
 
 def build_local_workspace_backend(

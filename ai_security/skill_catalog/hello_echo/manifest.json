@@ -1,0 +1,8 @@
+{
+  "id": "hello_echo",
+  "name": "Hello Echo",
+  "version": "1.0.0",
+  "summary": "示例技能：回显输入，用于验证已安装技能可被 Agent 正常调用。",
+  "tool_module": "tool",
+  "tool_entry": "get_tools"
+}
