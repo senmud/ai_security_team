@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 - 2026-04-10
+
+- Skill install command now supports multiple sources through `/skill install <source>`:
+  - built-in catalog IDs (existing behavior),
+  - GitHub URLs (repo root / blob / raw),
+  - local or remote `SKILL.md` files.
+- Added generic SKILL.md importer in `ai_security/skill_registry.py` that persists original `SKILL.md` and generates runtime-loadable `manifest.json` + `tool.py`.
+- Updated `/skill` help text and README command docs accordingly.
+
 ## 0.4.0 - 2026-04-10
 
 - Extension Skills registry (`ai_security/skill_registry.py`): install from built-in `skill_catalog` into `agent_workspace/skills/installed/`, optional `AI_SECURITY_SKILLS_DIR`, merge `get_tools()` output into `default_security_tools()`.

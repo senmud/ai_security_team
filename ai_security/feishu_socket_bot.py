@@ -29,7 +29,7 @@ from langchain_openai import ChatOpenAI
 
 from .agents import create_security_deep_agent
 from .feishu_client import FeishuClient, FeishuCredentials
-from .skill_registry import format_skills_list_markdown, install_skill_from_catalog
+from .skill_registry import format_skills_list_markdown, install_skill
 
 TASK_TIMEOUT_SECONDS = 600
 
@@ -510,11 +510,11 @@ def main() -> None:
             _send_text(format_skills_list_markdown())
             return
 
-        # /skill install <id>：从内置 catalog 安装
-        m_install = re.match(r"^/skill\s+install\s+(\S+)\s*$", tstrip, flags=re.IGNORECASE)
+        # /skill install <source>：支持内置ID / GitHub / SKILL.md 文件或链接
+        m_install = re.match(r"^/skill\s+install\s+(.+?)\s*$", tstrip, flags=re.IGNORECASE)
         if m_install:
-            sid = m_install.group(1).strip()
-            ok, msg = install_skill_from_catalog(sid)
+            source = m_install.group(1).strip()
+            ok, msg = install_skill(source)
             _send_text(msg if ok else f"安装失败：{msg}")
             return
 
@@ -522,7 +522,9 @@ def main() -> None:
             _send_text(
                 "Skill 命令：\n"
                 "- `/skills` — 列出已安装技能（名称、版本、概述）\n"
-                "- `/skill install <技能ID>` — 从内置目录安装（例如 `hello_echo`）"
+                "- `/skill install <技能ID>` — 从内置目录安装（例如 `hello_echo`）\n"
+                "- `/skill install <GitHub链接>` — 从 GitHub 导入 SKILL.md\n"
+                "- `/skill install <SKILL.md路径或链接>` — 从本地/远程 SKILL.md 导入"
             )
             return
 

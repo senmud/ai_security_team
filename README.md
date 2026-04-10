@@ -107,7 +107,11 @@ python -m ai_security.feishu_socket_bot
 
 **`/skills`** — 列出已安装的扩展 Skills：**名称、版本、功能概述**（来自各技能目录下的 `manifest.json`）。
 
-**`/skill install <技能ID>`** — 从仓库内置的 `ai_security/skill_catalog/<技能ID>/` 复制到已安装目录（例如先安装示例：`/skill install hello_echo`）。
+**`/skill install <技能ID>`** — 从仓库内置的 `ai_security/skill_catalog/<技能ID>/` 复制到已安装目录（例如：`/skill install hello_echo`）。
+
+**`/skill install <GitHub链接>`** — 从 GitHub 导入 `SKILL.md`（支持仓库根链接、`blob/.../SKILL.md` 链接或 `raw.githubusercontent.com` 原始链接）。
+
+**`/skill install <SKILL.md路径或链接>`** — 从本地 `SKILL.md` 文件路径或任意可访问的 `SKILL.md` URL 导入并安装。
 
 **`/skill`** — 简要说明上述命令。
 
