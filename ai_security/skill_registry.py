@@ -548,7 +548,7 @@ def install_skill_from_git_repo(source: str) -> tuple[bool, str]:
             # 没有 scripts 目录也允许安装，保持空目录
             pass
 
-        rewritten_md = _rewrite_skill_md_script_paths(skill_md)
+        rewritten_md = _rewrite_skill_md_script_paths(skill_md, skill_id=skill_id)
         (dst / "SKILL.md").write_text(rewritten_md, encoding="utf-8")
         return True, f"已安装技能 `{skill_id}`（来源: git 仓库）。"
     finally:
