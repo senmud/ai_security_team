@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.7 - 2026-04-13
+
+- Skill install now supports **git repository source**:
+  - create temp dir under `agent_workspace/tmp/`,
+  - clone repo (`--depth 1`),
+  - copy `SKILL.md` and `scripts/` into installed skill path,
+  - rewrite script paths/commands in `SKILL.md`,
+  - delete temp directory after install.
+
 ## 0.4.6 - 2026-04-13
 
 - Skill install hardening:

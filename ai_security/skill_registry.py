@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 import httpx
 from langchain_core.tools import BaseTool, tool
@@ -349,6 +351,53 @@ def _read_skill_md_source(source: str) -> tuple[bool, str, str]:
     return False, "既不是 URL 也不是本地可读文件", ""
 
 
+def _is_git_repo_source(source: str) -> bool:
+    s = (source or "").strip()
+    if not s:
+        return False
+    if s.startswith("git@"):
+        return True
+    if s.startswith(("http://", "https://")):
+        # 明确的 SKILL.md 链接应走 md 读取逻辑
+        if s.lower().endswith("/skill.md") or "raw.githubusercontent.com" in s or "/blob/" in s:
+            return False
+        # 常见 git 仓库 URL（GitHub/GitLab/Bitbucket 等）
+        if s.endswith(".git"):
+            return True
+        if re.match(r"^https?://[^/]+/[^/]+/[^/]+/?$", s):
+            return True
+    return False
+
+
+def _clone_git_repo_to_temp(source: str) -> tuple[bool, str]:
+    workspace_tmp = _workspace_root() / "tmp"
+    workspace_tmp.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="skill_clone_", dir=str(workspace_tmp)))
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", source, str(tmp_dir / "repo")],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return False, f"clone 仓库失败: {e!s}"
+    return True, str(tmp_dir / "repo")
+
+
+def _locate_repo_skill_md(repo_dir: Path) -> Path | None:
+    direct = repo_dir / "SKILL.md"
+    if direct.is_file():
+        return direct
+    # 兜底：递归查找首个 SKILL.md
+    for p in repo_dir.rglob("SKILL.md"):
+        if p.is_file():
+            return p
+    return None
+
+
 def materialize_skill_from_markdown(
     skill_md: str,
     *,
@@ -399,6 +448,68 @@ def install_skill_from_skill_md(source: str) -> tuple[bool, str]:
     return True, f"已安装技能 `{sid_or_err}`（来源: {source_kind}）。"
 
 
+def install_skill_from_git_repo(source: str) -> tuple[bool, str]:
+    """
+    从 git 仓库安装技能：
+    1) 在 agent_workspace 下临时目录 clone 仓库
+    2) 复制 SKILL.md 与 scripts 到安装目录
+    3) 重写 SKILL.md 命令/路径
+    4) 删除临时目录
+    """
+    ok, repo_or_err = _clone_git_repo_to_temp(source)
+    if not ok:
+        return False, repo_or_err
+
+    repo_dir = Path(repo_or_err)
+    tmp_root = repo_dir.parent
+    try:
+        md_path = _locate_repo_skill_md(repo_dir)
+        if not md_path or not md_path.is_file():
+            return False, "仓库中未找到 SKILL.md。"
+        skill_md = md_path.read_text(encoding="utf-8")
+        if not skill_md.strip():
+            return False, "仓库中的 SKILL.md 为空。"
+
+        repo_name = repo_dir.name
+        if repo_name == "repo":
+            # clone 到固定子目录时，取 URL 最后一段作为 repo 名
+            tail = Path((source or "").rstrip("/")).name
+            repo_name = tail.replace(".git", "") or "repo"
+        skill_id = _slugify_skill_id(f"repo-{repo_name}")
+        dst = get_installed_skills_root() / skill_id
+        if dst.exists():
+            shutil.rmtree(dst)
+        dst.mkdir(parents=True, exist_ok=True)
+
+        scripts_dst = dst / "scripts"
+        scripts_dst.mkdir(parents=True, exist_ok=True)
+
+        # 优先复制 SKILL.md 同级 scripts，其次仓库根 scripts
+        candidate_scripts = [md_path.parent / "scripts", repo_dir / "scripts"]
+        copied = False
+        for src_scripts in candidate_scripts:
+            if src_scripts.is_dir():
+                for child in src_scripts.iterdir():
+                    target = scripts_dst / child.name
+                    if child.is_dir():
+                        if target.exists():
+                            shutil.rmtree(target)
+                        shutil.copytree(child, target)
+                    elif child.is_file():
+                        shutil.copy2(child, target)
+                copied = True
+                break
+        if not copied:
+            # 没有 scripts 目录也允许安装，保持空目录
+            pass
+
+        rewritten_md = _rewrite_skill_md_script_paths(skill_md)
+        (dst / "SKILL.md").write_text(rewritten_md, encoding="utf-8")
+        return True, f"已安装技能 `{skill_id}`（来源: git 仓库）。"
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
 def install_skill_from_clawhub_slug(slug: str) -> tuple[bool, str]:
     """从 ClawHub（经 Layer API）拉取 SKILL.md 并安装为本地扩展 Skill。"""
     from .clawhub_client import fetch_skill_markdown_from_clawhub
@@ -428,7 +539,10 @@ def install_skill(skill_source: str) -> tuple[bool, str]:
     统一安装入口：
     - 按 GitHub / SKILL.md 来源安装。
     """
-    return install_skill_from_skill_md((skill_source or "").strip())
+    src = (skill_source or "").strip()
+    if _is_git_repo_source(src):
+        return install_skill_from_git_repo(src)
+    return install_skill_from_skill_md(src)
 
 
 def format_skills_list_markdown() -> str:
