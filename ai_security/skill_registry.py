@@ -295,8 +295,9 @@ def _rewrite_skill_md_script_paths(skill_md: str, *, skill_id: str) -> str:
         else m.group(0),
         text,
     )
-    # 兜底：避免把整条命令前缀误改成 `./scripts/uv run python ...`
-    text = re.sub(r"(?<!\S)\./scripts/(uv run python\s+)", r"\1", text)
+    # 兜底：避免把整条命令前缀误改成 `<...>/scripts/uv ...`
+    text = re.sub(r"(?<!\S)(?:\./scripts/|[^\s`)]*/scripts/)(uv run python\s+)", r"\1", text)
+    text = re.sub(r"(?<!\S)(?:\./scripts/|[^\s`)]*/scripts/)(uv pip\s+)", r"\1", text)
     return text
 
 
