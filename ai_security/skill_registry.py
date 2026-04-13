@@ -318,6 +318,18 @@ def _copy_local_scripts_if_exists(source: str, dst_scripts_dir: Path) -> None:
             shutil.copy2(child, target)
 
 
+def _copy_local_requirements_if_exists(source: str, dst_scripts_dir: Path) -> Path | None:
+    src = Path((source or "").strip()).expanduser()
+    if not src.is_file():
+        return None
+    req = src.parent / "requirements.txt"
+    if not req.is_file():
+        return None
+    dst = dst_scripts_dir / "requirements.txt"
+    shutil.copy2(req, dst)
+    return dst
+
+
 def _fetch_skill_md_from_github_url(url: str) -> tuple[bool, str]:
     raw = (url or "").strip()
     if not raw:
@@ -494,6 +506,40 @@ def _validate_installed_skill_scripts(
     )
     if not ok:
         return False, f"脚本自检失败（uv run python -m compileall）:\n{msg}"
+
+    # 真实导入自检：执行每个 .py 的顶层 import，可尽早暴露缺失依赖
+    ok, msg = _run_subprocess(
+        [
+            "uv",
+            "run",
+            "python",
+            "-c",
+            (
+                "import importlib.util, pathlib, traceback, sys;"
+                "root=pathlib.Path('.').resolve();"
+                "files=sorted([p for p in root.rglob('*.py') if p.is_file()]);"
+                "failed=[];"
+                "sys.path.insert(0, str(root));"
+                "import os; os.environ['AI_SECURITY_SKILL_VALIDATE']='1';"
+                "for p in files:"
+                "  try:"
+                "    spec=importlib.util.spec_from_file_location(f'_skill_validate_{p.stem}', p);"
+                "    mod=importlib.util.module_from_spec(spec);"
+                "    assert spec and spec.loader;"
+                "    spec.loader.exec_module(mod)"
+                "  except Exception as e:"
+                "    failed.append((str(p), ''.join(traceback.format_exception_only(type(e), e)).strip()));"
+                "if failed:"
+                "  details='\\n'.join([f'{a}: {b}' for a,b in failed]);"
+                "  raise SystemExit('import-check failed:\\n'+details);"
+                "print(f'import-check ok: {len(files)} python files')"
+            ),
+        ],
+        cwd=scripts_dir,
+        timeout_sec=240,
+    )
+    if not ok:
+        return False, f"脚本导入自检失败（uv run python import-check）:\n{msg}"
     return True, "ok"
 
 
@@ -519,9 +565,17 @@ def materialize_skill_from_markdown(
     scripts_dir = dst / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     _copy_local_scripts_if_exists(source, scripts_dir)
+    copied_requirements = _copy_local_requirements_if_exists(source, scripts_dir)
 
     rewritten_md = _rewrite_skill_md_script_paths(skill_md, skill_id=skill_id)
     (dst / "SKILL.md").write_text(rewritten_md, encoding="utf-8")
+    ok_validate, validate_msg = _validate_installed_skill_scripts(
+        scripts_dir=scripts_dir,
+        requirements_path=copied_requirements,
+    )
+    if not ok_validate:
+        shutil.rmtree(dst, ignore_errors=True)
+        return False, f"安装技能失败 `{skill_id}`：\n{validate_msg}"
     return True, skill_id
 
 
