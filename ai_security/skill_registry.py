@@ -444,6 +444,59 @@ def _locate_repo_skill_md(repo_dir: Path) -> Path | None:
     return None
 
 
+def _run_subprocess(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout_sec: int = 180,
+) -> tuple[bool, str]:
+    try:
+        cp = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+        )
+    except Exception as e:  # noqa: BLE001
+        return False, f"命令执行异常: {' '.join(cmd)}\n{e!s}"
+    if cp.returncode != 0:
+        out = (cp.stdout or "").strip()
+        err = (cp.stderr or "").strip()
+        return (
+            False,
+            f"命令失败({cp.returncode}): {' '.join(cmd)}\n"
+            f"{('stdout:\n' + out + '\n') if out else ''}"
+            f"{('stderr:\n' + err) if err else ''}",
+        )
+    return True, (cp.stdout or "").strip()
+
+
+def _validate_installed_skill_scripts(
+    *,
+    scripts_dir: Path,
+    requirements_path: Path | None,
+) -> tuple[bool, str]:
+    if requirements_path and requirements_path.is_file():
+        ok, msg = _run_subprocess(
+            ["uv", "pip", "install", "-r", requirements_path.name],
+            cwd=scripts_dir,
+            timeout_sec=300,
+        )
+        if not ok:
+            return False, f"安装依赖失败（requirements.txt）:\n{msg}"
+
+    ok, msg = _run_subprocess(
+        ["uv", "run", "python", "-m", "compileall", "-q", "."],
+        cwd=scripts_dir,
+        timeout_sec=180,
+    )
+    if not ok:
+        return False, f"脚本自检失败（uv run python -m compileall）:\n{msg}"
+    return True, "ok"
+
+
 def materialize_skill_from_markdown(
     skill_md: str,
     *,
@@ -549,9 +602,27 @@ def install_skill_from_git_repo(source: str) -> tuple[bool, str]:
             # 没有 scripts 目录也允许安装，保持空目录
             pass
 
+        requirements_src_candidates = [md_path.parent / "requirements.txt", repo_dir / "requirements.txt"]
+        copied_requirements: Path | None = None
+        for req_src in requirements_src_candidates:
+            if req_src.is_file():
+                req_dst = scripts_dst / "requirements.txt"
+                shutil.copy2(req_src, req_dst)
+                copied_requirements = req_dst
+                break
+
         rewritten_md = _rewrite_skill_md_script_paths(skill_md, skill_id=skill_id)
         (dst / "SKILL.md").write_text(rewritten_md, encoding="utf-8")
-        return True, f"已安装技能 `{skill_id}`（来源: git 仓库）。"
+
+        ok_validate, validate_msg = _validate_installed_skill_scripts(
+            scripts_dir=scripts_dst,
+            requirements_path=copied_requirements,
+        )
+        if not ok_validate:
+            shutil.rmtree(dst, ignore_errors=True)
+            return False, f"安装技能失败 `{skill_id}`：\n{validate_msg}"
+
+        return True, f"已安装技能 `{skill_id}`（来源: git 仓库，依赖安装与脚本自检通过）。"
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
