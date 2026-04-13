@@ -508,32 +508,43 @@ def _validate_installed_skill_scripts(
         return False, f"脚本自检失败（uv run python -m compileall）:\n{msg}"
 
     # 真实导入自检：执行每个 .py 的顶层 import，可尽早暴露缺失依赖
+    import_check_code = """
+import importlib.util
+import os
+import pathlib
+import sys
+import traceback
+
+root = pathlib.Path(".").resolve()
+files = sorted([p for p in root.rglob("*.py") if p.is_file()])
+failed = []
+sys.path.insert(0, str(root))
+os.environ["AI_SECURITY_SKILL_VALIDATE"] = "1"
+
+for p in files:
+    try:
+        spec = importlib.util.spec_from_file_location(f"_skill_validate_{p.stem}", p)
+        if not spec or not spec.loader:
+            raise RuntimeError("cannot create module spec")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:  # noqa: BLE001
+        failed.append((str(p), "".join(traceback.format_exception_only(type(e), e)).strip()))
+
+if failed:
+    details = "\\n".join([f"{a}: {b}" for a, b in failed])
+    raise SystemExit("import-check failed:\\n" + details)
+
+print(f"import-check ok: {len(files)} python files")
+""".strip()
+
     ok, msg = _run_subprocess(
         [
             "uv",
             "run",
             "python",
             "-c",
-            (
-                "import importlib.util, pathlib, traceback, sys;"
-                "root=pathlib.Path('.').resolve();"
-                "files=sorted([p for p in root.rglob('*.py') if p.is_file()]);"
-                "failed=[];"
-                "sys.path.insert(0, str(root));"
-                "import os; os.environ['AI_SECURITY_SKILL_VALIDATE']='1';"
-                "for p in files:"
-                "  try:"
-                "    spec=importlib.util.spec_from_file_location(f'_skill_validate_{p.stem}', p);"
-                "    mod=importlib.util.module_from_spec(spec);"
-                "    assert spec and spec.loader;"
-                "    spec.loader.exec_module(mod)"
-                "  except Exception as e:"
-                "    failed.append((str(p), ''.join(traceback.format_exception_only(type(e), e)).strip()));"
-                "if failed:"
-                "  details='\\n'.join([f'{a}: {b}' for a,b in failed]);"
-                "  raise SystemExit('import-check failed:\\n'+details);"
-                "print(f'import-check ok: {len(files)} python files')"
-            ),
+            import_check_code,
         ],
         cwd=scripts_dir,
         timeout_sec=240,
