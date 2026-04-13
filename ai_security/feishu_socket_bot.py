@@ -31,7 +31,7 @@ from .agents import stream_security_agent_with_fallback
 from .feishu_client import FeishuClient, FeishuCredentials
 from .skill_registry import format_skills_list_markdown, install_skill
 
-TASK_TIMEOUT_SECONDS = 600
+TASK_TIMEOUT_SECONDS = 1800
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -290,7 +290,7 @@ class TaskRegistry:
                             task.process.terminate()
                     except Exception:
                         pass
-                    self._finalize(task, "failed", "任务执行超过10分钟，已强制终止。")
+                    self._finalize(task, "failed", "任务执行超过30分钟，已强制终止。")
                     continue
                 # 2) 子进程回传结果
                 try:

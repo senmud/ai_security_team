@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.6 - 2026-04-13
+
+- Skill install hardening:
+  - create `<skill_id>/scripts/` during install,
+  - rewrite script paths in `SKILL.md` to `./scripts/...`,
+  - rewrite Python script calls to `uv run python ./scripts/...`,
+  - rewrite `pip` / `python -m pip` commands to `uv pip ...`.
+- Local-file installs now copy sibling `scripts/` directory into installed skill path when present.
+- Feishu multi-agent timeout increased from 10 minutes to 30 minutes.
+
 ## 0.4.5 - 2026-04-13
 
 - Skills registry simplified to **SKILL.md-only**:

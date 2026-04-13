@@ -204,6 +204,74 @@ def _extract_title_from_skill_md(skill_md: str) -> str:
     return "Imported Skill"
 
 
+def _normalize_script_path(raw_path: str) -> str:
+    p = (raw_path or "").strip().strip("'\"")
+    if not p:
+        return p
+    # 绝对路径不改写
+    if p.startswith("/"):
+        return p
+    # 统一到 ./scripts/
+    p = p.removeprefix("./")
+    p = p.removeprefix("../")
+    if p.startswith("scripts/"):
+        p = p[len("scripts/") :]
+    name = Path(p).name
+    if not name:
+        return "./scripts"
+    return f"./scripts/{name}"
+
+
+def _rewrite_skill_md_script_paths(skill_md: str) -> str:
+    """
+    将 SKILL.md 中常见的脚本调用路径重写到 `./scripts/<filename>`。
+    处理场景：
+    - 命令调用：python/bash/sh/node/deno + 路径
+    - Markdown 链接中的脚本路径
+    - 反引号代码片段中的脚本路径
+    """
+    text = skill_md or ""
+    path_re = r"(?:\./|\.\./)?[A-Za-z0-9_./-]+\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)"
+
+    # 先重写 python/python3 为 uv run python，避免依赖当前 shell 的 venv 激活状态
+    py_cmd_pat = re.compile(rf"(?P<prefix>\b(?:python|python3)\s+)(?P<path>{path_re})")
+    text = py_cmd_pat.sub(lambda m: f"uv run python {_normalize_script_path(m.group('path'))}", text)
+
+    # pip/pip3 -> uv pip（仅替换命令前缀，保留参数）
+    pip_cmd_line_pat = re.compile(r"(?m)^(\s*)(?:pip3?|python3?\s+-m\s+pip)\s+")
+    text = pip_cmd_line_pat.sub(r"\1uv pip ", text)
+    pip_inline_pat = re.compile(r"(?<!\S)(?:pip3?|python3?\s+-m\s+pip)\s+")
+    text = pip_inline_pat.sub("uv pip ", text)
+
+    # 其他脚本执行器仍保留原命令，但路径统一到 ./scripts/
+    cmd_pat = re.compile(rf"(?P<prefix>\b(?:bash|sh|node|deno)\s+)(?P<path>{path_re})")
+    text = cmd_pat.sub(lambda m: f"{m.group('prefix')}{_normalize_script_path(m.group('path'))}", text)
+
+    md_link_pat = re.compile(rf"\((?P<path>{path_re})\)")
+    text = md_link_pat.sub(lambda m: f"({_normalize_script_path(m.group('path'))})", text)
+
+    code_tick_pat = re.compile(rf"`(?P<path>{path_re})`")
+    text = code_tick_pat.sub(lambda m: f"`{_normalize_script_path(m.group('path'))}`", text)
+    return text
+
+
+def _copy_local_scripts_if_exists(source: str, dst_scripts_dir: Path) -> None:
+    src = Path((source or "").strip()).expanduser()
+    if not src.is_file():
+        return
+    src_scripts = src.parent / "scripts"
+    if not src_scripts.is_dir():
+        return
+    for child in src_scripts.iterdir():
+        target = dst_scripts_dir / child.name
+        if child.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(child, target)
+        elif child.is_file():
+            shutil.copy2(child, target)
+
+
 def _fetch_skill_md_from_github_url(url: str) -> tuple[bool, str]:
     raw = (url or "").strip()
     if not raw:
@@ -285,6 +353,7 @@ def materialize_skill_from_markdown(
     skill_md: str,
     *,
     skill_id: str,
+    source: str = "",
 ) -> tuple[bool, str]:
     """
     将 SKILL.md 内容写入已安装目录。
@@ -299,7 +368,12 @@ def materialize_skill_from_markdown(
         shutil.rmtree(dst)
     dst.mkdir(parents=True, exist_ok=True)
 
-    (dst / "SKILL.md").write_text(skill_md, encoding="utf-8")
+    scripts_dir = dst / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    _copy_local_scripts_if_exists(source, scripts_dir)
+
+    rewritten_md = _rewrite_skill_md_script_paths(skill_md)
+    (dst / "SKILL.md").write_text(rewritten_md, encoding="utf-8")
     return True, skill_id
 
 
@@ -318,6 +392,7 @@ def install_skill_from_skill_md(source: str) -> tuple[bool, str]:
     ok2, sid_or_err = materialize_skill_from_markdown(
         skill_md,
         skill_id=skill_id,
+        source=source,
     )
     if not ok2:
         return False, sid_or_err
@@ -341,6 +416,7 @@ def install_skill_from_clawhub_slug(slug: str) -> tuple[bool, str]:
     ok2, sid_or_err = materialize_skill_from_markdown(
         skill_md,
         skill_id=skill_id,
+        source="",
     )
     if not ok2:
         return False, sid_or_err

@@ -1,6 +1,6 @@
 # AI Security Teams – LangChain Deep Agents 实现骨架
 
-**版本：0.4.5**（与 `ai_security.__version__` 同步）
+**版本：0.4.6**（与 `ai_security.__version__` 同步）
 
 本仓库基于文档 `AI_Security_Teams_Architecture_and_Benchmarking.md` 与 `AI_Security_Teams_System_Architecture.md`，使用 **LangChain AI 官方 [`deepagents`](https://pypi.org/project/deepagents/) 包**（`create_deep_agent`）作为核心 harness，承载安全运营场景中的工具调用与多步推理；`ai_security/agents.py` 对其做了安全领域封装。
 
@@ -38,7 +38,7 @@ python -m ai_security.demo_run
 | **读写文件 / 目录检索** | `deepagents` 内置 `ls`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`；默认通过 **`LocalShellBackend`** 映射到 `agent_workspace/`（`virtual_mode=True`）。 |
 | **Shell 执行** | 内置工具 **`execute`**；需 Backend 实现 `SandboxBackendProtocol`，`LocalShellBackend` 会在本机用户权限下执行命令。**仅限可信环境**；生产请换隔离沙箱后端。 |
 | **首轮自定义工具** | `create_security_deep_agent` 默认 **`primary_security_tools()`**：仅 **已安装扩展 Skills** + **`web_search`**（`ddgs`），不含占位安全工具与 ClawHub。 |
-| **可安装扩展 Skills** | 见 `ai_security/skill_registry.py`：已安装技能放在 `<agent_workspace>/skills/installed/<skill_id>/`（可用 **`AI_SECURITY_SKILLS_DIR`** 覆盖根目录），仅依赖 `SKILL.md`，运行时动态生成对应工具。 |
+| **可安装扩展 Skills** | 见 `ai_security/skill_registry.py`：已安装技能放在 `<agent_workspace>/skills/installed/<skill_id>/`（可用 **`AI_SECURITY_SKILLS_DIR`** 覆盖根目录），仅依赖 `SKILL.md`，运行时动态生成对应工具。安装阶段会创建 `<skill_id>/scripts/`，并将 `SKILL.md` 中脚本调用路径统一重写到该目录。Python 脚本调用会改写为 `uv run python ./scripts/...`，`pip`/`python -m pip` 会改写为 `uv pip ...`，减少 venv 环境差异导致的失败。 |
 | **回退工具集** | 若 **`stream_security_agent_with_fallback`** 首轮流式执行**抛错**，会换用 **`default_security_tools()`**：占位 **`threat_feed_connector` / `log_analyzer` / `deep_entity_trace`** 与 **ClawHub**（**不含**本地 skill 与 `web_search`），重试同一输入一次。ClawHub 默认基址 `https://clawhub.atomicbot.ai`，可用 **`AI_SECURITY_CLAWHUB_API_BASE`** 覆盖。 |
 
 `demo_run` / 飞书主路径使用 **`stream_security_agent_with_fallback`**：**输出为流式**，首轮仅技能 + `web_search`，异常时再合并回退集。
@@ -94,7 +94,7 @@ python -m ai_security.feishu_socket_bot
   - 已运行时间（秒）
 - **子 agent 计划与状态同步**：子 agent 在执行过程中会把 `write_todos` 渲染出的**整段计划快照**通过“update”消息同步给主 agent；**每次更新用新快照整体替换旧快照**（不再按条目 key 合并去重）。
   - 主 agent 在任务项下方展示当前快照中的计划行（如“进行中/已完成/失败”等）。
-- **超时策略**：任务超过 **10 分钟**会被强制终止（kill），并按失败处理。
+- **超时策略**：任务超过 **30 分钟**会被强制终止（kill），并按失败处理。
 - **即时反馈**：派生子 agent 后，机器人会立刻回复“正在处理”并展示当前任务列表。
 - **主 agent 每次请求重建**：非多 agent 路径下，每次用户消息会重新构建 Deep Agent，以便**新安装的扩展 Skills**立即生效。
 
