@@ -7,13 +7,15 @@ deepagents 自带的文件与 shell 能力由 Backend（如 LocalShellBackend）
 - ls / read_file / write_file / edit_file / glob / grep
 - execute（本地 shell，见 deepagents 文档安全说明）
 
-本模块提供公网检索技能 web_search。
+本模块提供公网检索技能 web_search，以及 ClawHub 技能集市检索与安装工具。
 """
 
 import os
 from pathlib import Path
 
 from langchain_core.tools import tool
+
+from .clawhub_client import search_clawhub_skills as _clawhub_search_impl
 
 
 def get_agent_workspace_dir() -> Path:
@@ -57,3 +59,19 @@ def web_search(query: str, max_results: int = 5) -> str:
     if not lines:
         return "未检索到结果，可尝试更换关键词。"
     return "\n\n".join(lines)
+
+
+@tool
+def clawhub_search_skills(query: str, limit: int = 8) -> str:
+    """在 **ClawHub** 公开技能集市检索 skill。**第三步才用**：已确认无匹配的已安装技能，且内置文件/shell/`web_search` 仍不足以解决时再调用。"""
+    return _clawhub_search_impl(query, limit=limit)
+
+
+@tool
+def clawhub_install_skill(skill_slug: str) -> str:
+    """从 ClawHub 按 slug 拉取 SKILL.md 并安装（与 `/skill install` 类似）。**第三步才用**；安装后需在新一轮 Agent 生命周期中才会加载为新工具。"""
+    from .skill_registry import install_skill_from_clawhub_slug
+
+    slug = (skill_slug or "").strip()
+    ok, msg = install_skill_from_clawhub_slug(slug)
+    return msg if ok else f"安装失败：{msg}"

@@ -1,6 +1,6 @@
 # AI Security Teams – LangChain Deep Agents 实现骨架
 
-**版本：0.4.0**（与 `ai_security.__version__` 同步）
+**版本：0.4.3**（与 `ai_security.__version__` 同步）
 
 本仓库基于文档 `AI_Security_Teams_Architecture_and_Benchmarking.md` 与 `AI_Security_Teams_System_Architecture.md`，使用 **LangChain AI 官方 [`deepagents`](https://pypi.org/project/deepagents/) 包**（`create_deep_agent`）作为核心 harness，承载安全运营场景中的工具调用与多步推理；`ai_security/agents.py` 对其做了安全领域封装。
 
@@ -39,6 +39,7 @@ python -m ai_security.demo_run
 | **Shell 执行** | 内置工具 **`execute`**；需 Backend 实现 `SandboxBackendProtocol`，`LocalShellBackend` 会在本机用户权限下执行命令。**仅限可信环境**；生产请换隔离沙箱后端。 |
 | **Web 搜索** | 扩展工具 **`web_search`**（`ddgs`），已并入 `create_security_deep_agent` 的 `tools`。 |
 | **可安装扩展 Skills** | 见 `ai_security/skill_registry.py`：已安装技能放在 `<agent_workspace>/skills/installed/<skill_id>/`（可用环境变量 **`AI_SECURITY_SKILLS_DIR`** 覆盖根目录），通过 `manifest.json` + `tool.py`（导出 `get_tools()`）在运行时加载为 LangChain Tool，并与默认工具合并。内置示例目录为 `ai_security/skill_catalog/hello_echo`。 |
+| **ClawHub 技能集市** | 扩展工具 **`clawhub_search_skills`** / **`clawhub_install_skill`**（见 `ai_security/clawhub_client.py`）：**优先级最低**——先匹配本地已安装技能，再用内置文件/`execute`/`web_search`，仍不足时再从 ClawHub 检索并拉取 `SKILL.md` 安装。默认 API 基址为 `https://clawhub.atomicbot.ai`，可用 **`AI_SECURITY_CLAWHUB_API_BASE`** 覆盖。 |
 
 `demo_run` 会构建 **Deep Agent**（`CompiledStateGraph`），合并上述内置能力、`ai_security/skills.py` 中的扩展工具，以及**当前已安装的扩展 Skills**。**输出为流式**：`ChatOpenAI(streaming=True)` + `graph.stream(..., stream_mode="messages", version="v2")`。
 

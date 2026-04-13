@@ -233,19 +233,22 @@ def _read_skill_md_source(source: str) -> tuple[bool, str, str]:
     return False, "既不是 URL 也不是本地可读文件", ""
 
 
-def install_skill_from_skill_md(source: str) -> tuple[bool, str]:
+def materialize_skill_from_markdown(
+    skill_md: str,
+    *,
+    skill_id: str,
+    name: str,
+    summary: str,
+    description: str,
+) -> tuple[bool, str]:
     """
-    从 GitHub 或任意 SKILL.md（URL/本地文件）安装技能。
-    安装时会生成 manifest.json + tool.py，使其可被当前技能加载器识别。
+    将 SKILL.md 内容写入已安装目录并生成 manifest.json + tool.py。
+    skill_id 需已规范化（见 _slugify_skill_id）。
     """
-    ok, content_or_err, source_kind = _read_skill_md_source(source)
-    if not ok:
-        return False, content_or_err
+    skill_id = _slugify_skill_id(skill_id)
+    if not skill_id:
+        return False, "无效的技能 ID"
 
-    skill_md = content_or_err
-    title = _extract_title_from_skill_md(skill_md)
-    src_tail = Path((source or "").strip()).name or "skill"
-    skill_id = _slugify_skill_id(f"{title}-{src_tail}")
     dst = get_installed_skills_root() / skill_id
     if dst.exists():
         shutil.rmtree(dst)
@@ -272,17 +275,69 @@ def install_skill_from_skill_md(source: str) -> tuple[bool, str]:
     )
     manifest = {
         "id": skill_id,
-        "name": title,
+        "name": name,
         "version": "0.1.0",
-        "summary": "Installed from SKILL.md source",
-        "description": f"Imported from {source_kind}: {source}",
+        "summary": summary,
+        "description": description,
         "tool_module": "tool",
         "tool_entry": "get_tools",
     }
     (dst / "SKILL.md").write_text(skill_md, encoding="utf-8")
     (dst / "tool.py").write_text(tool_code, encoding="utf-8")
     (dst / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    return True, f"已安装技能 `{skill_id}`（来源: {source_kind}）。"
+    return True, skill_id
+
+
+def install_skill_from_skill_md(source: str) -> tuple[bool, str]:
+    """
+    从 GitHub 或任意 SKILL.md（URL/本地文件）安装技能。
+    安装时会生成 manifest.json + tool.py，使其可被当前技能加载器识别。
+    """
+    ok, content_or_err, source_kind = _read_skill_md_source(source)
+    if not ok:
+        return False, content_or_err
+
+    skill_md = content_or_err
+    title = _extract_title_from_skill_md(skill_md)
+    src_tail = Path((source or "").strip()).name or "skill"
+    skill_id = _slugify_skill_id(f"{title}-{src_tail}")
+    ok2, sid_or_err = materialize_skill_from_markdown(
+        skill_md,
+        skill_id=skill_id,
+        name=title,
+        summary="Installed from SKILL.md source",
+        description=f"Imported from {source_kind}: {source}",
+    )
+    if not ok2:
+        return False, sid_or_err
+    return True, f"已安装技能 `{sid_or_err}`（来源: {source_kind}）。"
+
+
+def install_skill_from_clawhub_slug(slug: str) -> tuple[bool, str]:
+    """从 ClawHub（经 Layer API）拉取 SKILL.md 并安装为本地扩展 Skill。"""
+    from .clawhub_client import fetch_skill_markdown_from_clawhub
+
+    slug = (slug or "").strip()
+    if not slug or not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", slug):
+        return False, "无效的 skill slug。"
+
+    ok, md_or_err = fetch_skill_markdown_from_clawhub(slug)
+    if not ok:
+        return False, md_or_err
+
+    skill_md = md_or_err
+    title = _extract_title_from_skill_md(skill_md)
+    skill_id = _slugify_skill_id(f"clawhub-{slug}")
+    ok2, sid_or_err = materialize_skill_from_markdown(
+        skill_md,
+        skill_id=skill_id,
+        name=title,
+        summary=f"ClawHub: {slug}",
+        description=f"Imported from ClawHub slug `{slug}`",
+    )
+    if not ok2:
+        return False, sid_or_err
+    return True, f"已从 ClawHub 安装技能 `{sid_or_err}`（slug: `{slug}`）。**当前会话**需重新创建 Agent 后新工具才会加载；飞书机器人每条消息会重建 Agent，可直接生效。"
 
 
 def install_skill(skill_source: str) -> tuple[bool, str]:

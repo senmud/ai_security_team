@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3 - 2026-04-12
+
+- System prompt: tool/skill priority is now **installed extension skills → built-in file tools + `execute` + `web_search` → ClawHub**; README and tool docstrings aligned.
+
+## 0.4.2 - 2026-04-12
+
+- Agent tools: **`clawhub_search_skills`** and **`clawhub_install_skill`** (ClawHub Layer API, default `https://clawhub.atomicbot.ai`, overridable via **`AI_SECURITY_CLAWHUB_API_BASE`**).
+- System prompt and tool ordering: **installed extension skills load first**; model is instructed to use local skills when relevant and only fall back to ClawHub search when no suitable installed skill exists.
+- `skill_registry.materialize_skill_from_markdown` refactors SKILL.md installs; **`install_skill_from_clawhub_slug`** fetches `SKILL.md` from the registry API and materializes into `skills/installed/`.
+
 ## 0.4.1 - 2026-04-10
 
 - Skill install command now supports multiple sources through `/skill install <source>`:
