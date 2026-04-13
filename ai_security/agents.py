@@ -120,6 +120,7 @@ def stream_security_agent_with_fallback(
     `default_security_tools()` 重建 Agent 并重放同一 `stream_input`（仅重试一次）。
     """
     sm = stream_mode or ["tasks", "updates", "messages"]
+    primary_err: BaseException | None = None
     for use_fallback in (False, True):
         try:
             tools = default_security_tools() if use_fallback else primary_security_tools()
@@ -132,9 +133,16 @@ def stream_security_agent_with_fallback(
             for part in agent.stream(stream_input, stream_mode=sm, version=version):
                 yield part
             return
-        except BaseException:
+        except BaseException as e:
             if use_fallback:
+                if primary_err is not None:
+                    raise RuntimeError(
+                        "Skill 首轮执行失败，且回退工具集执行也失败。"
+                        f"\n- 首轮错误: {primary_err!s}\n- 回退错误: {e!s}"
+                    ) from e
                 raise
+            primary_err = e
+            print(f"[SkillExecutionError] primary_tools_failed: {e!s}", flush=True)
             continue
 
 

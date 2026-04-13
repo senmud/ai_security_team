@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.8 - 2026-04-13
+
+- Skill observability improvements:
+  - print `[SkillLoadError]` with `skill_id`/`SKILL.md` path and traceback when installed skill loading fails,
+  - return structured `[SkillError]` message from runtime generated skill tools when execution fails.
+- Fallback diagnostics improved:
+  - print `[SkillExecutionError]` when primary skill toolset run fails before fallback,
+  - raise combined error message if both primary and fallback runs fail.
+
 ## 0.4.7 - 2026-04-13
 
 - Skill install now supports **git repository source**:

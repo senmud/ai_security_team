@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import traceback
 from pathlib import Path
 import httpx
 from langchain_core.tools import BaseTool, tool
@@ -163,8 +164,14 @@ def _build_tool_from_skill_md(skill_id: str, skill_md: str) -> BaseTool:
     @tool
     def _skill_tool(task: str) -> str:
         """执行该 Skill 的说明，并结合当前任务给出建议步骤。"""
-        t = (task or "").strip()
-        return "请按以下 Skill 指南执行。\n\n" + skill_md + "\n\n---\n" + f"当前任务: {t}"
+        try:
+            t = (task or "").strip()
+            return "请按以下 Skill 指南执行。\n\n" + skill_md + "\n\n---\n" + f"当前任务: {t}"
+        except Exception as e:  # noqa: BLE001
+            return (
+                f"[SkillError] skill=`{skill_id}` 执行失败：{e!s}\n\n"
+                "请检查该 skill 的 SKILL.md 内容、脚本路径与命令格式。"
+            )
 
     _skill_tool.name = tool_name
     return _skill_tool
@@ -187,7 +194,12 @@ def load_installed_skill_tools() -> list[BaseTool]:
             if not skill_md.strip():
                 continue
             tools.append(_build_tool_from_skill_md(sub.name, skill_md))
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            print(
+                f"[SkillLoadError] skill_id={sub.name} path={md_path} error={e!s}\n"
+                f"{traceback.format_exc()}",
+                flush=True,
+            )
             continue
     return tools
 
@@ -206,22 +218,21 @@ def _extract_title_from_skill_md(skill_md: str) -> str:
     return "Imported Skill"
 
 
-def _normalize_script_path(raw_path: str) -> str:
+def _normalize_script_path(raw_path: str, *, skill_id: str) -> str:
     p = (raw_path or "").strip().strip("'\"")
     if not p:
         return p
-    # 绝对路径不改写
-    if p.startswith("/"):
-        return p
+    # 统一改写到 <skills_root>/<skill_id>/scripts/<filename>
     # 统一到 ./scripts/
     p = p.removeprefix("./")
     p = p.removeprefix("../")
     if p.startswith("scripts/"):
         p = p[len("scripts/") :]
     name = Path(p).name
+    base = get_installed_skills_root() / skill_id / "scripts"
     if not name:
-        return "./scripts"
-    return f"./scripts/{name}"
+        return str(base)
+    return str(base / name)
 
 
 def _looks_like_path_token(token: str) -> bool:
@@ -237,7 +248,7 @@ def _looks_like_path_token(token: str) -> bool:
     return False
 
 
-def _rewrite_skill_md_script_paths(skill_md: str) -> str:
+def _rewrite_skill_md_script_paths(skill_md: str, *, skill_id: str) -> str:
     """
     将 SKILL.md 中常见的脚本调用路径重写到 `./scripts/<filename>`。
     处理场景：
@@ -251,7 +262,10 @@ def _rewrite_skill_md_script_paths(skill_md: str) -> str:
 
     # 先重写 python/python3 为 uv run python，避免依赖当前 shell 的 venv 激活状态
     py_cmd_pat = re.compile(rf"(?P<prefix>\b(?:python|python3)\s+)(?P<path>{path_re})")
-    text = py_cmd_pat.sub(lambda m: f"uv run python {_normalize_script_path(m.group('path'))}", text)
+    text = py_cmd_pat.sub(
+        lambda m: f"uv run python {_normalize_script_path(m.group('path'), skill_id=skill_id)}",
+        text,
+    )
 
     # pip/pip3 -> uv pip（仅替换命令前缀，保留参数）
     pip_cmd_line_pat = re.compile(r"(?m)^(\s*)(?:pip3?|python3?\s+-m\s+pip)\s+")
@@ -261,11 +275,14 @@ def _rewrite_skill_md_script_paths(skill_md: str) -> str:
 
     # 其他脚本执行器仍保留原命令，但路径统一到 ./scripts/
     cmd_pat = re.compile(rf"(?P<prefix>\b(?:bash|sh|node|deno)\s+)(?P<path>{path_re})")
-    text = cmd_pat.sub(lambda m: f"{m.group('prefix')}{_normalize_script_path(m.group('path'))}", text)
+    text = cmd_pat.sub(
+        lambda m: f"{m.group('prefix')}{_normalize_script_path(m.group('path'), skill_id=skill_id)}",
+        text,
+    )
 
     md_link_pat = re.compile(rf"\((?P<path>{path_re})\)")
     text = md_link_pat.sub(
-        lambda m: f"({_normalize_script_path(m.group('path'))})"
+        lambda m: f"({_normalize_script_path(m.group('path'), skill_id=skill_id)})"
         if _looks_like_path_token(m.group("path"))
         else m.group(0),
         text,
@@ -273,7 +290,7 @@ def _rewrite_skill_md_script_paths(skill_md: str) -> str:
 
     code_tick_pat = re.compile(rf"`(?P<path>{path_re})`")
     text = code_tick_pat.sub(
-        lambda m: f"`{_normalize_script_path(m.group('path'))}`"
+        lambda m: f"`{_normalize_script_path(m.group('path'), skill_id=skill_id)}`"
         if _looks_like_path_token(m.group("path"))
         else m.group(0),
         text,
@@ -449,7 +466,7 @@ def materialize_skill_from_markdown(
     scripts_dir.mkdir(parents=True, exist_ok=True)
     _copy_local_scripts_if_exists(source, scripts_dir)
 
-    rewritten_md = _rewrite_skill_md_script_paths(skill_md)
+    rewritten_md = _rewrite_skill_md_script_paths(skill_md, skill_id=skill_id)
     (dst / "SKILL.md").write_text(rewritten_md, encoding="utf-8")
     return True, skill_id
 
