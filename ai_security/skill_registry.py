@@ -224,6 +224,19 @@ def _normalize_script_path(raw_path: str) -> str:
     return f"./scripts/{name}"
 
 
+def _looks_like_path_token(token: str) -> bool:
+    t = (token or "").strip().strip("'\"")
+    if not t:
+        return False
+    if t.startswith(("./", "../", "/", "~/")):
+        return True
+    if "/" in t:
+        return True
+    if re.search(r"\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)\b", t, flags=re.IGNORECASE):
+        return True
+    return False
+
+
 def _rewrite_skill_md_script_paths(skill_md: str) -> str:
     """
     将 SKILL.md 中常见的脚本调用路径重写到 `./scripts/<filename>`。
@@ -233,7 +246,8 @@ def _rewrite_skill_md_script_paths(skill_md: str) -> str:
     - 反引号代码片段中的脚本路径
     """
     text = skill_md or ""
-    path_re = r"(?:\./|\.\./)?[A-Za-z0-9_./-]+\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)"
+    # 兼容有扩展名和无扩展名脚本（如 scripts/run），并覆盖 ~ / 绝对路径
+    path_re = r"(?:~?/|/|(?:\./|\.\./))?[A-Za-z0-9_./-]+(?:\.[A-Za-z0-9_-]+)?"
 
     # 先重写 python/python3 为 uv run python，避免依赖当前 shell 的 venv 激活状态
     py_cmd_pat = re.compile(rf"(?P<prefix>\b(?:python|python3)\s+)(?P<path>{path_re})")
@@ -250,10 +264,22 @@ def _rewrite_skill_md_script_paths(skill_md: str) -> str:
     text = cmd_pat.sub(lambda m: f"{m.group('prefix')}{_normalize_script_path(m.group('path'))}", text)
 
     md_link_pat = re.compile(rf"\((?P<path>{path_re})\)")
-    text = md_link_pat.sub(lambda m: f"({_normalize_script_path(m.group('path'))})", text)
+    text = md_link_pat.sub(
+        lambda m: f"({_normalize_script_path(m.group('path'))})"
+        if _looks_like_path_token(m.group("path"))
+        else m.group(0),
+        text,
+    )
 
     code_tick_pat = re.compile(rf"`(?P<path>{path_re})`")
-    text = code_tick_pat.sub(lambda m: f"`{_normalize_script_path(m.group('path'))}`", text)
+    text = code_tick_pat.sub(
+        lambda m: f"`{_normalize_script_path(m.group('path'))}`"
+        if _looks_like_path_token(m.group("path"))
+        else m.group(0),
+        text,
+    )
+    # 兜底：避免把整条命令前缀误改成 `./scripts/uv run python ...`
+    text = re.sub(r"(?<!\S)\./scripts/(uv run python\s+)", r"\1", text)
     return text
 
 
@@ -363,6 +389,8 @@ def _is_git_repo_source(source: str) -> bool:
             return False
         # 常见 git 仓库 URL（GitHub/GitLab/Bitbucket 等）
         if s.endswith(".git"):
+            return True
+        if "/tree/" in s:
             return True
         if re.match(r"^https?://[^/]+/[^/]+/[^/]+/?$", s):
             return True
