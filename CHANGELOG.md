@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.5 - 2026-04-13
+
+- Skills registry simplified to **SKILL.md-only**:
+  - removed built-in catalog and manifest-based metadata/runtime dependencies,
+  - removed `tool.py` generation/loading path.
+- Runtime skill loading now scans installed skill directories and dynamically builds one LangChain tool per `SKILL.md`.
+- `/skills` display uses installed directory IDs + parsed `SKILL.md` (title/version/summary) for Feishu-friendly output.
+- README and command/docs updated to reflect SKILL.md-only install/load flow.
+
 ## 0.4.4 - 2026-04-12
 
 - **Tool split**: `default_security_tools()` no longer includes installed skills or `web_search`; it only returns placeholder security tools + ClawHub installers.

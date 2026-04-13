@@ -1,25 +1,20 @@
 from __future__ import annotations
 
 """
-已安装 Skills 的目录、安装（从内置 catalog 复制）与运行时加载为 LangChain Tool。
+已安装 Skills 的目录、安装（从 SKILL.md 来源导入）与运行时加载为 LangChain Tool。
 
 目录约定（在 agent 工作区下）：
-- `<workspace>/skills/installed/<skill_id>/manifest.json`
-- `<workspace>/skills/installed/<skill_id>/<tool_module>.py`（默认 tool.py，导出 `get_tools()`）
+- `<workspace>/skills/installed/<skill_id>/SKILL.md`
 
 环境变量 `AI_SECURITY_SKILLS_DIR` 可覆盖「已安装 skills」根目录（默认 `<workspace>/skills/installed`）。
 """
 
-import importlib.util
-import json
 import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any
-
 import httpx
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, tool
 
 from .skills import get_agent_workspace_dir
 
@@ -37,25 +32,94 @@ def get_installed_skills_root() -> Path:
     return root
 
 
-def get_skill_catalog_root() -> Path:
-    """内置可安装技能包目录（随包发布）。"""
-    return Path(__file__).resolve().parent / "skill_catalog"
+def _extract_yaml_front_matter(skill_md: str) -> dict[str, str]:
+    """
+    提取 SKILL.md 顶部 `---` front matter 中的扁平键值（仅处理 `k: v`）。
+    非严格 YAML 解析，足够覆盖常见 metadata 场景。
+    """
+    text = (skill_md or "").strip()
+    if not text.startswith("---"):
+        return {}
+    lines = text.splitlines()
+    if not lines:
+        return {}
+    out: dict[str, str] = {}
+    # 跳过第一行 `---`
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        m = re.match(r"^\s*([A-Za-z0-9_.-]+)\s*:\s*(.+?)\s*$", line)
+        if not m:
+            continue
+        k, v = m.groups()
+        out[k.strip().lower()] = v.strip().strip("'\"")
+    return out
 
 
-def _read_manifest(skill_dir: Path) -> dict[str, Any] | None:
-    mf = skill_dir / "manifest.json"
-    if not mf.is_file():
-        return None
-    try:
-        return json.loads(mf.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+def _extract_summary_from_skill_md(skill_md: str, fallback: str = "") -> str:
+    """
+    从 SKILL.md 提取功能概述：
+    1) front matter: summary/description
+    2) 首个 H1 标题后的第一段正文
+    3) 文档第一段正文
+    """
+    fm = _extract_yaml_front_matter(skill_md)
+    for key in ("summary", "description"):
+        val = (fm.get(key) or "").strip()
+        if val:
+            return val[:220]
+
+    lines = (skill_md or "").splitlines()
+    h1_idx = -1
+    for i, ln in enumerate(lines):
+        if re.match(r"^\s*#\s+\S+", ln):
+            h1_idx = i
+            break
+    search_from = h1_idx + 1 if h1_idx >= 0 else 0
+    para: list[str] = []
+    for ln in lines[search_from:]:
+        s = ln.strip()
+        if not s:
+            if para:
+                break
+            continue
+        if s.startswith("#"):
+            if para:
+                break
+            continue
+        para.append(s)
+    if para:
+        return " ".join(para)[:220]
+    return (fallback or "").strip()[:220]
+
+
+def _extract_version_from_skill_md(skill_md: str) -> str:
+    """
+    从 SKILL.md 提取版本号：
+    1) front matter: version
+    2) 文本中 `version: x.y.z` / `v1.2.3` / `版本：x.y.z`
+    """
+    fm = _extract_yaml_front_matter(skill_md)
+    ver = (fm.get("version") or "").strip()
+    if ver:
+        return ver
+
+    patterns = [
+        r"(?im)^\s*version\s*[:=]\s*([0-9]+(?:\.[0-9]+){0,3}(?:[-+][A-Za-z0-9_.-]+)?)\s*$",
+        r"(?i)\bv([0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9_.-]+)?)\b",
+        r"(?im)^\s*版本\s*[：:]\s*([0-9]+(?:\.[0-9]+){0,3}(?:[-+][A-Za-z0-9_.-]+)?)\s*$",
+    ]
+    for pat in patterns:
+        m = re.search(pat, skill_md or "")
+        if m:
+            return m.group(1).strip()
+    return "unknown"
 
 
 def list_installed_skills() -> list[dict[str, str]]:
     """
     返回已安装技能元数据列表：id、name、version、summary。
-    无法读取 manifest 的目录会跳过。
+    /skills 展示从 `SKILL.md` 提取版本与功能概述。
     """
     root = get_installed_skills_root()
     out: list[dict[str, str]] = []
@@ -64,47 +128,48 @@ def list_installed_skills() -> list[dict[str, str]]:
     for sub in sorted(root.iterdir()):
         if not sub.is_dir():
             continue
-        data = _read_manifest(sub)
-        if not data:
-            continue
-        sid = str(data.get("id") or sub.name).strip() or sub.name
+        sid = sub.name
+        skill_md = ""
+        md_path = sub / "SKILL.md"
+        if md_path.is_file():
+            try:
+                skill_md = md_path.read_text(encoding="utf-8")
+            except Exception:
+                skill_md = ""
+        name = _extract_title_from_skill_md(skill_md) if skill_md.strip() else ""
+        if not name or name == "Imported Skill":
+            name = sid
+        version = _extract_version_from_skill_md(skill_md) if skill_md.strip() else "unknown"
+        summary = _extract_summary_from_skill_md(skill_md, fallback="")
         out.append(
             {
                 "id": sid,
-                "name": str(data.get("name") or sid),
-                "version": str(data.get("version") or "0.0.0"),
-                "summary": str(data.get("summary") or data.get("description") or ""),
+                "name": name,
+                "version": version,
+                "summary": summary or "（未在 SKILL.md 中提取到功能概述）",
             }
         )
     return out
 
 
-def _load_tools_from_skill_dir(skill_dir: Path, manifest: dict[str, Any]) -> list[BaseTool]:
-    mod_name = str(manifest.get("tool_module") or "tool").replace(".py", "").strip() or "tool"
-    py_path = skill_dir / f"{mod_name}.py"
-    if not py_path.is_file():
-        return []
-    spec = importlib.util.spec_from_file_location(f"ai_security_skill_{skill_dir.name}_{mod_name}", py_path)
-    if spec is None or spec.loader is None:
-        return []
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    entry = str(manifest.get("tool_entry") or "get_tools").strip() or "get_tools"
-    fn = getattr(module, entry, None)
-    if not callable(fn):
-        return []
-    raw = fn()
-    if raw is None:
-        return []
-    if isinstance(raw, BaseTool):
-        return [raw]
-    if isinstance(raw, (list, tuple)):
-        return [x for x in raw if isinstance(x, BaseTool)]
-    return []
+def _build_tool_from_skill_md(skill_id: str, skill_md: str) -> BaseTool:
+    safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", skill_id)
+    if not safe_name or safe_name[0].isdigit():
+        safe_name = f"skill_{safe_name}"
+    tool_name = f"skill_{safe_name}"
+
+    @tool
+    def _skill_tool(task: str) -> str:
+        """执行该 Skill 的说明，并结合当前任务给出建议步骤。"""
+        t = (task or "").strip()
+        return "请按以下 Skill 指南执行。\n\n" + skill_md + "\n\n---\n" + f"当前任务: {t}"
+
+    _skill_tool.name = tool_name
+    return _skill_tool
 
 
 def load_installed_skill_tools() -> list[BaseTool]:
-    """扫描已安装目录，加载各技能 `get_tools()` 返回的工具列表。"""
+    """扫描已安装目录，基于各技能 `SKILL.md` 动态生成工具列表。"""
     root = get_installed_skills_root()
     tools: list[BaseTool] = []
     if not root.is_dir():
@@ -112,34 +177,17 @@ def load_installed_skill_tools() -> list[BaseTool]:
     for sub in sorted(root.iterdir()):
         if not sub.is_dir():
             continue
-        manifest = _read_manifest(sub)
-        if not manifest:
+        md_path = sub / "SKILL.md"
+        if not md_path.is_file():
             continue
         try:
-            tools.extend(_load_tools_from_skill_dir(sub, manifest))
+            skill_md = md_path.read_text(encoding="utf-8")
+            if not skill_md.strip():
+                continue
+            tools.append(_build_tool_from_skill_md(sub.name, skill_md))
         except Exception:
             continue
     return tools
-
-
-def install_skill_from_catalog(skill_id: str) -> tuple[bool, str]:
-    """
-    从内置 `skill_catalog/<skill_id>` 复制到已安装目录。
-    成功返回 (True, 提示)；失败返回 (False, 错误信息)。
-    """
-    skill_id = (skill_id or "").strip()
-    if not skill_id or ".." in skill_id or "/" in skill_id or "\\" in skill_id:
-        return False, "无效的技能 ID（仅允许字母数字、下划线、连字符）。"
-
-    src = get_skill_catalog_root() / skill_id
-    if not src.is_dir():
-        return False, f"内置目录中不存在技能: {skill_id}"
-
-    dst = get_installed_skills_root() / skill_id
-    if dst.exists():
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst)
-    return True, f"已安装技能 `{skill_id}`（来源: skill_catalog）。"
 
 
 def _slugify_skill_id(value: str) -> str:
@@ -237,12 +285,9 @@ def materialize_skill_from_markdown(
     skill_md: str,
     *,
     skill_id: str,
-    name: str,
-    summary: str,
-    description: str,
 ) -> tuple[bool, str]:
     """
-    将 SKILL.md 内容写入已安装目录并生成 manifest.json + tool.py。
+    将 SKILL.md 内容写入已安装目录。
     skill_id 需已规范化（见 _slugify_skill_id）。
     """
     skill_id = _slugify_skill_id(skill_id)
@@ -254,59 +299,25 @@ def materialize_skill_from_markdown(
         shutil.rmtree(dst)
     dst.mkdir(parents=True, exist_ok=True)
 
-    tool_fn = f"skill_{_slugify_skill_id(skill_id).replace('-', '_')}"
-    skill_text_literal = repr(skill_md)
-    tool_code = (
-        "from __future__ import annotations\n\n"
-        "from langchain_core.tools import tool\n\n"
-        f"SKILL_TEXT = {skill_text_literal}\n\n"
-        "@tool\n"
-        f"def {tool_fn}(task: str) -> str:\n"
-        '    """执行该 Skill 的说明，并结合当前任务给出建议步骤。"""\n'
-        "    t = (task or '').strip()\n"
-        "    return (\n"
-        "        '请按以下 Skill 指南执行。\\n\\n'\n"
-        "        + SKILL_TEXT\n"
-        "        + '\\n\\n---\\n'\n"
-        "        + f'当前任务: {t}'\n"
-        "    )\n\n"
-        "def get_tools():\n"
-        f"    return [{tool_fn}]\n"
-    )
-    manifest = {
-        "id": skill_id,
-        "name": name,
-        "version": "0.1.0",
-        "summary": summary,
-        "description": description,
-        "tool_module": "tool",
-        "tool_entry": "get_tools",
-    }
     (dst / "SKILL.md").write_text(skill_md, encoding="utf-8")
-    (dst / "tool.py").write_text(tool_code, encoding="utf-8")
-    (dst / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return True, skill_id
 
 
 def install_skill_from_skill_md(source: str) -> tuple[bool, str]:
     """
     从 GitHub 或任意 SKILL.md（URL/本地文件）安装技能。
-    安装时会生成 manifest.json + tool.py，使其可被当前技能加载器识别。
+    安装时会写入 SKILL.md，并在运行时由加载器基于 SKILL.md 动态生成工具。
     """
     ok, content_or_err, source_kind = _read_skill_md_source(source)
     if not ok:
         return False, content_or_err
 
     skill_md = content_or_err
-    title = _extract_title_from_skill_md(skill_md)
     src_tail = Path((source or "").strip()).name or "skill"
-    skill_id = _slugify_skill_id(f"{title}-{src_tail}")
+    skill_id = _slugify_skill_id(f"imported-{src_tail}")
     ok2, sid_or_err = materialize_skill_from_markdown(
         skill_md,
         skill_id=skill_id,
-        name=title,
-        summary="Installed from SKILL.md source",
-        description=f"Imported from {source_kind}: {source}",
     )
     if not ok2:
         return False, sid_or_err
@@ -326,14 +337,10 @@ def install_skill_from_clawhub_slug(slug: str) -> tuple[bool, str]:
         return False, md_or_err
 
     skill_md = md_or_err
-    title = _extract_title_from_skill_md(skill_md)
     skill_id = _slugify_skill_id(f"clawhub-{slug}")
     ok2, sid_or_err = materialize_skill_from_markdown(
         skill_md,
         skill_id=skill_id,
-        name=title,
-        summary=f"ClawHub: {slug}",
-        description=f"Imported from ClawHub slug `{slug}`",
     )
     if not ok2:
         return False, sid_or_err
@@ -343,13 +350,9 @@ def install_skill_from_clawhub_slug(slug: str) -> tuple[bool, str]:
 def install_skill(skill_source: str) -> tuple[bool, str]:
     """
     统一安装入口：
-    - 若参数匹配内置 catalog 技能 ID，则从 catalog 安装；
-    - 否则尝试按 GitHub / SKILL.md 来源安装。
+    - 按 GitHub / SKILL.md 来源安装。
     """
-    sid = (skill_source or "").strip()
-    if sid and (get_skill_catalog_root() / sid).is_dir():
-        return install_skill_from_catalog(sid)
-    return install_skill_from_skill_md(sid)
+    return install_skill_from_skill_md((skill_source or "").strip())
 
 
 def format_skills_list_markdown() -> str:
@@ -358,15 +361,13 @@ def format_skills_list_markdown() -> str:
     if not items:
         return (
             "当前未安装任何扩展 Skill。\n\n"
-            "使用 `/skill install <技能ID>` 从内置目录安装（例如 `hello_echo`），"
-            "或 `/skill install <GitHub链接|SKILL.md路径|SKILL.md链接>` 导入。"
+            "使用 `/skill install <GitHub链接|SKILL.md路径|SKILL.md链接>` 导入。"
         )
-    lines = ["已安装的扩展 Skills：", ""]
+    lines = ["## 已安装 Skills", "", f"共 {len(items)} 个", ""]
     for it in items:
-        lines.append(f"- **{it['name']}**（`{it['id']}`） v{it['version']}")
-        if it["summary"]:
-            lines.append(f"  - {it['summary']}")
-        else:
-            lines.append("  - （无概述）")
+        lines.append(f"### {it['name']}")
+        lines.append(f"- ID：`{it['id']}`")
+        lines.append(f"- 版本：`{it['version']}`")
+        lines.append(f"- 功能概述：{it['summary']}")
         lines.append("")
     return "\n".join(lines).rstrip()

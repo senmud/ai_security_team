@@ -46,7 +46,7 @@ SECURITY_DEEP_SYSTEM_PROMPT = """你是企业安全运营「AI Security Teams」
    - **Shell**：`execute` 在本地执行命令（可配合 `read_file` 处理输出文件）；**仅在明确需要时使用**，并注意命令安全性。
 
 2. **本场景扩展工具**（下列第 1–3 点的**使用顺序**见下方「工具与技能使用优先级」）
-   - **已安装的扩展 Skills**：以独立工具出现在列表中（来自各技能目录的 `manifest.json` / `tool.py`）。
+   - **已安装的扩展 Skills**：以独立工具出现在列表中（来自各技能目录的 `SKILL.md`，运行时动态生成工具）。
    - `threat_feed_connector` / `log_analyzer` / `deep_entity_trace`：安全运营占位接口（可对接 SIEM/情报/图谱）。
    - `web_search`：需要**最新公开信息**时（CVE、厂商通告、漏洞别名等）使用。
    - `clawhub_search_skills` / `clawhub_install_skill`：在 **ClawHub** 集市检索并安装公开 skill（安装后下一轮 Agent 生命周期才会出现对应工具）；**仅在前两步仍不足时使用**。

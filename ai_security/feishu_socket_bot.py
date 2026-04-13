@@ -510,7 +510,7 @@ def main() -> None:
             _send_text(format_skills_list_markdown())
             return
 
-        # /skill install <source>：支持内置ID / GitHub / SKILL.md 文件或链接
+        # /skill install <source>：支持 GitHub / SKILL.md 文件或链接
         m_install = re.match(r"^/skill\s+install\s+(.+?)\s*$", tstrip, flags=re.IGNORECASE)
         if m_install:
             source = m_install.group(1).strip()
@@ -522,7 +522,6 @@ def main() -> None:
             _send_text(
                 "Skill 命令：\n"
                 "- `/skills` — 列出已安装技能（名称、版本、概述）\n"
-                "- `/skill install <技能ID>` — 从内置目录安装（例如 `hello_echo`）\n"
                 "- `/skill install <GitHub链接>` — 从 GitHub 导入 SKILL.md\n"
                 "- `/skill install <SKILL.md路径或链接>` — 从本地/远程 SKILL.md 导入"
             )

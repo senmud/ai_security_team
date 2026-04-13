@@ -1,6 +1,6 @@
 # AI Security Teams – LangChain Deep Agents 实现骨架
 
-**版本：0.4.4**（与 `ai_security.__version__` 同步）
+**版本：0.4.5**（与 `ai_security.__version__` 同步）
 
 本仓库基于文档 `AI_Security_Teams_Architecture_and_Benchmarking.md` 与 `AI_Security_Teams_System_Architecture.md`，使用 **LangChain AI 官方 [`deepagents`](https://pypi.org/project/deepagents/) 包**（`create_deep_agent`）作为核心 harness，承载安全运营场景中的工具调用与多步推理；`ai_security/agents.py` 对其做了安全领域封装。
 
@@ -38,7 +38,7 @@ python -m ai_security.demo_run
 | **读写文件 / 目录检索** | `deepagents` 内置 `ls`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`；默认通过 **`LocalShellBackend`** 映射到 `agent_workspace/`（`virtual_mode=True`）。 |
 | **Shell 执行** | 内置工具 **`execute`**；需 Backend 实现 `SandboxBackendProtocol`，`LocalShellBackend` 会在本机用户权限下执行命令。**仅限可信环境**；生产请换隔离沙箱后端。 |
 | **首轮自定义工具** | `create_security_deep_agent` 默认 **`primary_security_tools()`**：仅 **已安装扩展 Skills** + **`web_search`**（`ddgs`），不含占位安全工具与 ClawHub。 |
-| **可安装扩展 Skills** | 见 `ai_security/skill_registry.py`：已安装技能放在 `<agent_workspace>/skills/installed/<skill_id>/`（可用 **`AI_SECURITY_SKILLS_DIR`** 覆盖根目录），通过 `manifest.json` + `tool.py`（导出 `get_tools()`）加载。内置示例为 `ai_security/skill_catalog/hello_echo`。 |
+| **可安装扩展 Skills** | 见 `ai_security/skill_registry.py`：已安装技能放在 `<agent_workspace>/skills/installed/<skill_id>/`（可用 **`AI_SECURITY_SKILLS_DIR`** 覆盖根目录），仅依赖 `SKILL.md`，运行时动态生成对应工具。 |
 | **回退工具集** | 若 **`stream_security_agent_with_fallback`** 首轮流式执行**抛错**，会换用 **`default_security_tools()`**：占位 **`threat_feed_connector` / `log_analyzer` / `deep_entity_trace`** 与 **ClawHub**（**不含**本地 skill 与 `web_search`），重试同一输入一次。ClawHub 默认基址 `https://clawhub.atomicbot.ai`，可用 **`AI_SECURITY_CLAWHUB_API_BASE`** 覆盖。 |
 
 `demo_run` / 飞书主路径使用 **`stream_security_agent_with_fallback`**：**输出为流式**，首轮仅技能 + `web_search`，异常时再合并回退集。
@@ -106,9 +106,7 @@ python -m ai_security.feishu_socket_bot
 
 **`/task`** — 查看运行中任务列表（任务 ID、描述、已运行秒数，以及子 agent 当前的计划快照）。
 
-**`/skills`** — 列出已安装的扩展 Skills：**名称、版本、功能概述**（来自各技能目录下的 `manifest.json`）。
-
-**`/skill install <技能ID>`** — 从仓库内置的 `ai_security/skill_catalog/<技能ID>/` 复制到已安装目录（例如：`/skill install hello_echo`）。
+**`/skills`** — 列出已安装的扩展 Skills：**名称、版本、功能概述**（来自各技能目录下的 `SKILL.md`）。
 
 **`/skill install <GitHub链接>`** — 从 GitHub 导入 `SKILL.md`（支持仓库根链接、`blob/.../SKILL.md` 链接或 `raw.githubusercontent.com` 原始链接）。
 
