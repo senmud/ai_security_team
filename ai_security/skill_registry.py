@@ -318,16 +318,29 @@ def _copy_local_scripts_if_exists(source: str, dst_scripts_dir: Path) -> None:
             shutil.copy2(child, target)
 
 
+def _copy_requirements_if_exists(
+    candidates: list[Path],
+    *,
+    dst_scripts_dir: Path,
+) -> Path | None:
+    for req in candidates:
+        if not req.is_file():
+            continue
+        dst = dst_scripts_dir / "requirements.txt"
+        shutil.copy2(req, dst)
+        return dst
+    return None
+
+
 def _copy_local_requirements_if_exists(source: str, dst_scripts_dir: Path) -> Path | None:
     src = Path((source or "").strip()).expanduser()
     if not src.is_file():
         return None
-    req = src.parent / "requirements.txt"
-    if not req.is_file():
-        return None
-    dst = dst_scripts_dir / "requirements.txt"
-    shutil.copy2(req, dst)
-    return dst
+    req_candidates = [
+        src.parent / "requirements.txt",
+        src.parent / "scripts" / "requirements.txt",
+    ]
+    return _copy_requirements_if_exists(req_candidates, dst_scripts_dir=dst_scripts_dir)
 
 
 def _fetch_skill_md_from_github_url(url: str) -> tuple[bool, str]:
@@ -667,14 +680,16 @@ def install_skill_from_git_repo(source: str) -> tuple[bool, str]:
             # 没有 scripts 目录也允许安装，保持空目录
             pass
 
-        requirements_src_candidates = [md_path.parent / "requirements.txt", repo_dir / "requirements.txt"]
-        copied_requirements: Path | None = None
-        for req_src in requirements_src_candidates:
-            if req_src.is_file():
-                req_dst = scripts_dst / "requirements.txt"
-                shutil.copy2(req_src, req_dst)
-                copied_requirements = req_dst
-                break
+        requirements_src_candidates = [
+            md_path.parent / "requirements.txt",
+            md_path.parent / "scripts" / "requirements.txt",
+            repo_dir / "scripts" / "requirements.txt",
+            repo_dir / "requirements.txt",
+        ]
+        copied_requirements = _copy_requirements_if_exists(
+            requirements_src_candidates,
+            dst_scripts_dir=scripts_dst,
+        )
 
         rewritten_md = _rewrite_skill_md_script_paths(skill_md, skill_id=skill_id)
         (dst / "SKILL.md").write_text(rewritten_md, encoding="utf-8")
