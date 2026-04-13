@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-最小可运行示例：使用 LangChain AI `deepagents` 的 `create_deep_agent`（经 `create_security_deep_agent` 封装）。
+最小可运行示例：使用 LangChain AI `deepagents` 的 `create_deep_agent`（经 `stream_security_agent_with_fallback` 封装：首轮仅技能+web_search，流式异常时换用扩展工具集重试）。
 
 使用 LangGraph `stream_mode="messages"` + `version="v2"` 做 **LLM 流式输出**（逐 token/块打印）。
 
@@ -19,7 +19,7 @@ from typing import Any
 from langchain_core.messages import AIMessageChunk
 from langchain_openai import ChatOpenAI
 
-from .agents import create_security_deep_agent
+from .agents import stream_security_agent_with_fallback
 
 
 def _print_stream_text(content: Any) -> None:
@@ -129,7 +129,6 @@ def main() -> None:
     llm = ChatOpenAI(**llm_kwargs)
 
     use_local = os.environ.get("AI_SECURITY_LOCAL_SHELL", "1").lower() not in ("0", "false", "no")
-    agent = create_security_deep_agent(llm, use_local_workspace_and_shell=use_local)
 
     user_input = os.environ.get(
         "DEMO_USER_MESSAGE",
@@ -140,8 +139,10 @@ def main() -> None:
     print("=== Plan Trace ===", flush=True)
     plan_lines: list[str] = []
 
-    for part in agent.stream(
+    for part in stream_security_agent_with_fallback(
+        llm,
         {"messages": [{"role": "user", "content": user_input}]},
+        use_local_workspace_and_shell=use_local,
         stream_mode=["tasks", "updates", "messages"],
         version="v2",
     ):

@@ -27,7 +27,7 @@ from lark_oapi.core import JSON
 from langchain_core.messages import AIMessageChunk
 from langchain_openai import ChatOpenAI
 
-from .agents import create_security_deep_agent
+from .agents import stream_security_agent_with_fallback
 from .feishu_client import FeishuClient, FeishuCredentials
 from .skill_registry import format_skills_list_markdown, install_skill
 
@@ -172,10 +172,10 @@ def _run_child_agent_task(task_id: str, user_text: str, out_q: "mp.Queue[dict[st
     """
     try:
         llm = _build_llm()
-        agent = create_security_deep_agent(llm)
         answer_chunks: list[str] = []
         plan_lines: list[str] = []
-        for part in agent.stream(
+        for part in stream_security_agent_with_fallback(
+            llm,
             {"messages": [{"role": "user", "content": user_text}]},
             stream_mode=["tasks", "updates", "messages"],
             version="v2",
@@ -558,7 +558,6 @@ def main() -> None:
         def _work() -> None:
             try:
                 print("[FeishuSocketBot] invoking agent...", flush=True)
-                agent = create_security_deep_agent(llm)
                 answer_chunks: list[str] = []
                 plan_lines: list[str] = []
                 plan_stream = (_env("FEISHU_PLAN_STREAM", "1") or "1").lower() not in ("0", "false", "no")
@@ -566,7 +565,8 @@ def main() -> None:
                 if plan_stream:
                     _send_text("已收到请求，开始规划与执行。")
 
-                for part in agent.stream(
+                for part in stream_security_agent_with_fallback(
+                    llm,
                     {"messages": [{"role": "user", "content": text}]},
                     stream_mode=["tasks", "updates", "messages"],
                     version="v2",

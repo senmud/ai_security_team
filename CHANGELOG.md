@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4 - 2026-04-12
+
+- **Tool split**: `default_security_tools()` no longer includes installed skills or `web_search`; it only returns placeholder security tools + ClawHub installers.
+- **Primary agent**: `create_security_deep_agent(tools=None)` now defaults to **`primary_security_tools()`** (installed skills + `web_search` only).
+- **`stream_security_agent_with_fallback`**: streams with primary tools first; on **exception**, rebuilds with `default_security_tools()` and retries once. Used by `demo_run` and Feishu bot streaming paths.
+- System prompt adds a **tool-binding** note so the model does not call tools absent in the current round.
+
 ## 0.4.3 - 2026-04-12
 
 - System prompt: tool/skill priority is now **installed extension skills → built-in file tools + `execute` + `web_search` → ClawHub**; README and tool docstrings aligned.
