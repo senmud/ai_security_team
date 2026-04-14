@@ -683,7 +683,7 @@ def materialize_skill_from_markdown(
     )
     if not ok_validate:
         shutil.rmtree(dst, ignore_errors=True)
-        return False, f"安装技能失败 `{skill_id}`：\n{validate_msg}"
+        return False, f"安装技能失败 `{skill_id}`"
     return True, skill_id
 
 
