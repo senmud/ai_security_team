@@ -503,6 +503,16 @@ def _validate_installed_skill_scripts(
     scripts_dir: Path,
     requirements_path: Path | None,
 ) -> tuple[bool, str]:
+    # 在 scripts 目录显式创建 .venv，避免 uv pip / uv run 落到不确定的全局或上级环境
+    if not (scripts_dir / ".venv").is_dir():
+        ok, msg = _run_subprocess(
+            ["uv", "venv"],
+            cwd=scripts_dir,
+            timeout_sec=120,
+        )
+        if not ok:
+            return False, f"创建虚拟环境失败（uv venv）:\n{msg}"
+
     if requirements_path and requirements_path.is_file():
         ok, msg = _run_subprocess(
             ["uv", "pip", "install", "-r", requirements_path.name],

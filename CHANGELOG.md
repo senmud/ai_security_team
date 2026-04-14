@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.9 - 2026-04-14
+
+- Feishu Socket Mode: read `message_id` / `chat_id` / text from `P2ImMessageReceiveV1` fields directly; avoid `JSON.marshal` on the full event object to prevent websocket dispatch failures on some payloads (e.g. `NoneType` / `name` during event handling).
+- Skill install validation: run `uv venv` under `<skill>/scripts` when `.venv` is missing, before `uv pip install` and subsequent `uv run` self-checks, so installs and runs share one virtual environment.
+- Skill install: discover `requirements.txt` from additional locations (for example `scripts/requirements.txt` next to `SKILL.md` or under the repo root) when materializing local and git-based installs.
+
 ## 0.4.8 - 2026-04-13
 
 - Skill observability improvements:

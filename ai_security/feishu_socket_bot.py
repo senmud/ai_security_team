@@ -23,7 +23,6 @@ from typing import Optional, Callable
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
-from lark_oapi.core import JSON
 from langchain_core.messages import AIMessageChunk
 from langchain_openai import ChatOpenAI
 
@@ -66,34 +65,46 @@ def _extract_context_from_event(
     """
     从接收消息事件中提取 (message_id, chat_id, text)。
 
-    这里不依赖 SDK 的属性封装，而是利用 JSON.marshal 得到官方结构，
-    再按文档字段解析，避免版本差异导致属性缺失（如 msg_type）。
+    直接读取 lark_oapi 已反序列化后的 SDK 模型字段；**不要**对整包事件调用
+    `JSON.marshal(data)`：部分事件（mentions 等嵌套字段异常、或 SDK 版本差异）在
+    marshal 时可能触发 ``NoneType`` 相关属性错误，导致长连接回调失败。
     """
     try:
-        raw = JSON.marshal(data)
-        payload = json.loads(raw)
-    except Exception:
-        print("[FeishuSocketBot] failed to marshal event JSON", flush=True)
+        ev = getattr(data, "event", None)
+        if ev is None:
+            return None, None, None
+        msg = getattr(ev, "message", None)
+        if msg is None:
+            return None, None, None
+
+        chat_id = getattr(msg, "chat_id", None)
+        ev_chat = getattr(ev, "chat_id", None)
+        if not chat_id and isinstance(ev_chat, str):
+            chat_id = ev_chat
+
+        message_id = getattr(msg, "message_id", None)
+        if not message_id:
+            return None, chat_id, None
+
+        msg_type = getattr(msg, "message_type", None) or getattr(msg, "msg_type", None)
+        if msg_type != "text":
+            return message_id, chat_id, None
+
+        content_raw = getattr(msg, "content", None)
+        if content_raw is None:
+            content_raw = "{}"
+        if not isinstance(content_raw, str):
+            content = {"text": str(content_raw)}
+        else:
+            try:
+                content = json.loads(content_raw)
+            except Exception:
+                content = {"text": content_raw}
+        text = (content.get("text") or "").strip()
+        return message_id, chat_id, text or None
+    except Exception as e:  # noqa: BLE001
+        print(f"[FeishuSocketBot] failed to extract context from event: {e!s}", flush=True)
         return None, None, None
-
-    event = (payload or {}).get("event") or {}
-    chat_id = event.get("message", {}).get("chat_id") or (event.get("chat_id") if isinstance(event.get("chat_id"), str) else None)
-    msg = event.get("message") or {}
-    message_id = msg.get("message_id")
-    if not message_id:
-        return None, chat_id, None
-
-    msg_type = msg.get("msg_type") or msg.get("message_type")
-    if msg_type != "text":
-        return message_id, chat_id, None
-
-    content_raw = msg.get("content") or "{}"
-    try:
-        content = json.loads(content_raw) if isinstance(content_raw, str) else content_raw
-    except Exception:
-        content = {"text": str(content_raw)}
-    text = (content.get("text") or "").strip()
-    return message_id, chat_id, text or None
 
 
 def _extract_text_from_chunk_content(content: object) -> str:
