@@ -297,8 +297,24 @@ def _rewrite_skill_md_script_paths(skill_md: str, *, skill_id: str) -> str:
         text,
     )
     # 兜底：避免把整条命令前缀误改成 `<...>/scripts/uv ...`
-    text = re.sub(r"(?<!\S)(?:\./scripts/|[^\s`)]*/scripts/)(uv run python\s+)", r"\1", text)
+    text = re.sub(
+        r"(?<!\S)(?:\./scripts/|[^\s`)]*/scripts/)(uv run(?:\s+--with-requirements\s+[^\s]+\s+)?python\s+)",
+        r"\1",
+        text,
+    )
     text = re.sub(r"(?<!\S)(?:\./scripts/|[^\s`)]*/scripts/)(uv pip\s+)", r"\1", text)
+
+    # 若已复制 requirements.txt，则对「uv run python …」补充 --with-requirements（与自检命令一致）
+    req_installed = get_installed_skills_root() / skill_id / "scripts" / "requirements.txt"
+    if req_installed.is_file():
+
+        def _inject_req(m: re.Match[str]) -> str:
+            chunk = m.group(0)
+            if "--with-requirements" in chunk:
+                return chunk
+            return "uv run --with-requirements ./scripts/requirements.txt python "
+
+        text = re.sub(r"\buv run\s+python\s+", _inject_req, text)
     return text
 
 
@@ -517,6 +533,20 @@ def _run_subprocess(
     return True, (cp.stdout or "").strip()
 
 
+def _uv_run_python_cmd(*, scripts_dir: Path, python_argv: list[str]) -> list[str]:
+    """
+    构建 `uv run [ --with-requirements requirements.txt ] python <args…>`。
+    当 `scripts/requirements.txt` 存在时附加 `--with-requirements`，与 SKILL.md 中改写后的命令一致。
+    """
+    cmd: list[str] = ["uv", "run"]
+    req = scripts_dir / "requirements.txt"
+    if req.is_file():
+        cmd.extend(["--with-requirements", req.name])
+    cmd.append("python")
+    cmd.extend(python_argv)
+    return cmd
+
+
 def _validate_installed_skill_scripts(
     *,
     scripts_dir: Path,
@@ -576,10 +606,10 @@ def _validate_installed_skill_scripts(
 
     _emit_validation_step(
         on_validation_step,
-        "【自检 3/4】语法：正在执行 `uv run python -m compileall`…",
+        "【自检 3/4】语法：正在执行 `uv run [--with-requirements requirements.txt] python -m compileall`…",
     )
     ok, msg = _run_subprocess(
-        ["uv", "run", "python", "-m", "compileall", "-q", "."],
+        _uv_run_python_cmd(scripts_dir=scripts_dir, python_argv=["-m", "compileall", "-q", "."]),
         cwd=scripts_dir,
         timeout_sec=180,
     )
@@ -627,13 +657,7 @@ print(f"import-check ok: {len(files)} python files")
         "【自检 4/4】导入：正在执行顶层 import 检查…",
     )
     ok, msg = _run_subprocess(
-        [
-            "uv",
-            "run",
-            "python",
-            "-c",
-            import_check_code,
-        ],
+        _uv_run_python_cmd(scripts_dir=scripts_dir, python_argv=["-c", import_check_code]),
         cwd=scripts_dir,
         timeout_sec=240,
     )
