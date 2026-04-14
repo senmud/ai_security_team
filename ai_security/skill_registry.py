@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 import httpx
 from langchain_core.tools import BaseTool, tool
@@ -469,6 +470,24 @@ def _locate_repo_skill_md(repo_dir: Path) -> Path | None:
     return None
 
 
+def _emit_validation_step(
+    cb: Callable[[str], None] | None,
+    text: str,
+    *,
+    max_len: int = 3800,
+) -> None:
+    """安装自检进度回调（如飞书逐条推送）；失败不影响安装主流程。"""
+    if cb is None:
+        return
+    t = (text or "").strip()
+    if len(t) > max_len:
+        t = t[: max_len - 24].rstrip() + "\n…（内容过长已截断）"
+    try:
+        cb(t)
+    except Exception:
+        pass
+
+
 def _run_subprocess(
     cmd: list[str],
     *,
@@ -502,33 +521,74 @@ def _validate_installed_skill_scripts(
     *,
     scripts_dir: Path,
     requirements_path: Path | None,
+    on_validation_step: Callable[[str], None] | None = None,
 ) -> tuple[bool, str]:
     # 在 scripts 目录显式创建 .venv，避免 uv pip / uv run 落到不确定的全局或上级环境
     if not (scripts_dir / ".venv").is_dir():
+        _emit_validation_step(
+            on_validation_step,
+            "【自检 1/4】虚拟环境：正在执行 `uv venv`…",
+        )
         ok, msg = _run_subprocess(
             ["uv", "venv"],
             cwd=scripts_dir,
             timeout_sec=120,
         )
         if not ok:
+            _emit_validation_step(
+                on_validation_step,
+                f"【自检 1/4】虚拟环境：失败\n{msg}",
+            )
             return False, f"创建虚拟环境失败（uv venv）:\n{msg}"
+        _emit_validation_step(
+            on_validation_step,
+            "【自检 1/4】虚拟环境：成功（已创建 `scripts/.venv`）",
+        )
+    else:
+        _emit_validation_step(
+            on_validation_step,
+            "【自检 1/4】虚拟环境：跳过（`scripts/.venv` 已存在）",
+        )
 
     if requirements_path and requirements_path.is_file():
+        _emit_validation_step(
+            on_validation_step,
+            f"【自检 2/4】依赖：正在执行 `uv pip install -r {requirements_path.name}`…",
+        )
         ok, msg = _run_subprocess(
             ["uv", "pip", "install", "-r", requirements_path.name],
             cwd=scripts_dir,
             timeout_sec=300,
         )
         if not ok:
+            _emit_validation_step(
+                on_validation_step,
+                f"【自检 2/4】依赖：失败\n{msg}",
+            )
             return False, f"安装依赖失败（requirements.txt）:\n{msg}"
+        _emit_validation_step(on_validation_step, "【自检 2/4】依赖：成功")
+    else:
+        _emit_validation_step(
+            on_validation_step,
+            "【自检 2/4】依赖：跳过（未复制到 `requirements.txt`）",
+        )
 
+    _emit_validation_step(
+        on_validation_step,
+        "【自检 3/4】语法：正在执行 `uv run python -m compileall`…",
+    )
     ok, msg = _run_subprocess(
         ["uv", "run", "python", "-m", "compileall", "-q", "."],
         cwd=scripts_dir,
         timeout_sec=180,
     )
     if not ok:
+        _emit_validation_step(
+            on_validation_step,
+            f"【自检 3/4】语法：失败\n{msg}",
+        )
         return False, f"脚本自检失败（uv run python -m compileall）:\n{msg}"
+    _emit_validation_step(on_validation_step, "【自检 3/4】语法：成功")
 
     # 真实导入自检：执行每个 .py 的顶层 import，可尽早暴露缺失依赖
     import_check_code = """
@@ -561,6 +621,10 @@ if failed:
 print(f"import-check ok: {len(files)} python files")
 """.strip()
 
+    _emit_validation_step(
+        on_validation_step,
+        "【自检 4/4】导入：正在执行顶层 import 检查…",
+    )
     ok, msg = _run_subprocess(
         [
             "uv",
@@ -573,7 +637,15 @@ print(f"import-check ok: {len(files)} python files")
         timeout_sec=240,
     )
     if not ok:
+        _emit_validation_step(
+            on_validation_step,
+            f"【自检 4/4】导入：失败\n{msg}",
+        )
         return False, f"脚本导入自检失败（uv run python import-check）:\n{msg}"
+    _emit_validation_step(
+        on_validation_step,
+        f"【自检 4/4】导入：成功\n{(msg or '').strip() or '（无额外输出）'}",
+    )
     return True, "ok"
 
 
@@ -582,6 +654,7 @@ def materialize_skill_from_markdown(
     *,
     skill_id: str,
     source: str = "",
+    on_validation_step: Callable[[str], None] | None = None,
 ) -> tuple[bool, str]:
     """
     将 SKILL.md 内容写入已安装目录。
@@ -606,6 +679,7 @@ def materialize_skill_from_markdown(
     ok_validate, validate_msg = _validate_installed_skill_scripts(
         scripts_dir=scripts_dir,
         requirements_path=copied_requirements,
+        on_validation_step=on_validation_step,
     )
     if not ok_validate:
         shutil.rmtree(dst, ignore_errors=True)
@@ -613,7 +687,11 @@ def materialize_skill_from_markdown(
     return True, skill_id
 
 
-def install_skill_from_skill_md(source: str) -> tuple[bool, str]:
+def install_skill_from_skill_md(
+    source: str,
+    *,
+    on_validation_step: Callable[[str], None] | None = None,
+) -> tuple[bool, str]:
     """
     从 GitHub 或任意 SKILL.md（URL/本地文件）安装技能。
     安装时会写入 SKILL.md，并在运行时由加载器基于 SKILL.md 动态生成工具。
@@ -629,13 +707,18 @@ def install_skill_from_skill_md(source: str) -> tuple[bool, str]:
         skill_md,
         skill_id=skill_id,
         source=source,
+        on_validation_step=on_validation_step,
     )
     if not ok2:
         return False, sid_or_err
     return True, f"已安装技能 `{sid_or_err}`（来源: {source_kind}）。"
 
 
-def install_skill_from_git_repo(source: str) -> tuple[bool, str]:
+def install_skill_from_git_repo(
+    source: str,
+    *,
+    on_validation_step: Callable[[str], None] | None = None,
+) -> tuple[bool, str]:
     """
     从 git 仓库安装技能：
     1) 在 agent_workspace 下临时目录 clone 仓库
@@ -707,6 +790,7 @@ def install_skill_from_git_repo(source: str) -> tuple[bool, str]:
         ok_validate, validate_msg = _validate_installed_skill_scripts(
             scripts_dir=scripts_dst,
             requirements_path=copied_requirements,
+            on_validation_step=on_validation_step,
         )
         if not ok_validate:
             shutil.rmtree(dst, ignore_errors=True)
@@ -717,7 +801,11 @@ def install_skill_from_git_repo(source: str) -> tuple[bool, str]:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
-def install_skill_from_clawhub_slug(slug: str) -> tuple[bool, str]:
+def install_skill_from_clawhub_slug(
+    slug: str,
+    *,
+    on_validation_step: Callable[[str], None] | None = None,
+) -> tuple[bool, str]:
     """从 ClawHub（经 Layer API）拉取 SKILL.md 并安装为本地扩展 Skill。"""
     from .clawhub_client import fetch_skill_markdown_from_clawhub
 
@@ -735,21 +823,26 @@ def install_skill_from_clawhub_slug(slug: str) -> tuple[bool, str]:
         skill_md,
         skill_id=skill_id,
         source="",
+        on_validation_step=on_validation_step,
     )
     if not ok2:
         return False, sid_or_err
     return True, f"已从 ClawHub 安装技能 `{sid_or_err}`（slug: `{slug}`）。**当前会话**需重新创建 Agent 后新工具才会加载；飞书机器人每条消息会重建 Agent，可直接生效。"
 
 
-def install_skill(skill_source: str) -> tuple[bool, str]:
+def install_skill(
+    skill_source: str,
+    *,
+    on_validation_step: Callable[[str], None] | None = None,
+) -> tuple[bool, str]:
     """
     统一安装入口：
     - 按 GitHub / SKILL.md 来源安装。
     """
     src = (skill_source or "").strip()
     if _is_git_repo_source(src):
-        return install_skill_from_git_repo(src)
-    return install_skill_from_skill_md(src)
+        return install_skill_from_git_repo(src, on_validation_step=on_validation_step)
+    return install_skill_from_skill_md(src, on_validation_step=on_validation_step)
 
 
 def format_skills_list_markdown() -> str:

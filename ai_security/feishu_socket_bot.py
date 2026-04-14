@@ -525,7 +525,11 @@ def main() -> None:
         m_install = re.match(r"^/skill\s+install\s+(.+?)\s*$", tstrip, flags=re.IGNORECASE)
         if m_install:
             source = m_install.group(1).strip()
-            ok, msg = install_skill(source)
+
+            def _notify_skill_install_step(line: str) -> None:
+                _send_text(f"**Skill 安装自检**\n{line}")
+
+            ok, msg = install_skill(source, on_validation_step=_notify_skill_install_step)
             _send_text(msg if ok else f"安装失败：{msg}")
             return
 
