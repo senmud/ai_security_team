@@ -534,12 +534,13 @@ def _validate_installed_skill_scripts(
             cwd=scripts_dir,
             timeout_sec=120,
         )
-        if not ok:
+        venv_dir = scripts_dir / ".venv"
+        if not ok or not venv_dir.is_dir():
             _emit_validation_step(
                 on_validation_step,
-                f"【自检 1/4】虚拟环境：失败\n{msg}",
+                f"【自检 1/4】虚拟环境：失败（.venv 存在={venv_dir.is_dir()}）\n{msg}",
             )
-            return False, f"创建虚拟环境失败（uv venv）:\n{msg}"
+            return False, f"创建虚拟环境失败（uv venv）"
         _emit_validation_step(
             on_validation_step,
             "【自检 1/4】虚拟环境：成功（已创建 `scripts/.venv`）",
@@ -565,7 +566,7 @@ def _validate_installed_skill_scripts(
                 on_validation_step,
                 f"【自检 2/4】依赖：失败\n{msg}",
             )
-            return False, f"安装依赖失败（requirements.txt）:\n{msg}"
+            return False, f"安装依赖失败（requirements.txt）"
         _emit_validation_step(on_validation_step, "【自检 2/4】依赖：成功")
     else:
         _emit_validation_step(
@@ -587,7 +588,7 @@ def _validate_installed_skill_scripts(
             on_validation_step,
             f"【自检 3/4】语法：失败\n{msg}",
         )
-        return False, f"脚本自检失败（uv run python -m compileall）:\n{msg}"
+        return False, f"脚本自检失败（uv run python -m compileall）"
     _emit_validation_step(on_validation_step, "【自检 3/4】语法：成功")
 
     # 真实导入自检：执行每个 .py 的顶层 import，可尽早暴露缺失依赖
@@ -641,7 +642,7 @@ print(f"import-check ok: {len(files)} python files")
             on_validation_step,
             f"【自检 4/4】导入：失败\n{msg}",
         )
-        return False, f"脚本导入自检失败（uv run python import-check）:\n{msg}"
+        return False, f"脚本导入自检失败（uv run python import-check）"
     _emit_validation_step(
         on_validation_step,
         f"【自检 4/4】导入：成功\n{(msg or '').strip() or '（无额外输出）'}",
