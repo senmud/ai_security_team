@@ -303,6 +303,8 @@ def _rewrite_skill_md_script_paths(skill_md: str, *, skill_id: str) -> str:
         text,
     )
     text = re.sub(r"(?<!\S)(?:\./scripts/|[^\s`)]*/scripts/)(uv pip\s+)", r"\1", text)
+    # 通用兜底：`uv` 命令本体不应被路径化（例如 `/.../scripts/uv`）
+    text = re.sub(r"(?<!\S)(?:\./scripts/|[^\s`)]*/scripts/)(uv(?=\s|$))", r"\1", text)
     return text
 
 
