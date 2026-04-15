@@ -251,11 +251,11 @@ def _looks_like_path_token(token: str) -> bool:
 
 def _rewrite_skill_md_script_paths(skill_md: str, *, skill_id: str) -> str:
     """
-    将 SKILL.md 中常见的脚本调用路径重写到 `./scripts/<filename>`。
-    处理场景：
-    - 命令调用：python/bash/sh/node/deno + 路径
-    - Markdown 链接中的脚本路径
-    - 反引号代码片段中的脚本路径
+    将 SKILL.md 中**脚本文件路径**规范化到已安装目录下的 `scripts/`（绝对路径）。
+
+    注意：**只改路径 token**，不在此函数中给 `uv` / `uv run` / `uv pip` 追加额外参数或
+    把路径前缀误拼到 `uv` 可执行名上；已有 `uv run python …` 行仅通过兜底正则修正
+    「`…/scripts/uv …`」类误替换。
     """
     text = skill_md or ""
     # 兼容有扩展名和无扩展名脚本（如 scripts/run），并覆盖 ~ / 绝对路径
@@ -303,18 +303,6 @@ def _rewrite_skill_md_script_paths(skill_md: str, *, skill_id: str) -> str:
         text,
     )
     text = re.sub(r"(?<!\S)(?:\./scripts/|[^\s`)]*/scripts/)(uv pip\s+)", r"\1", text)
-
-    # 若已复制 requirements.txt，则对「uv run python …」补充 --with-requirements（与自检命令一致）
-    req_installed = get_installed_skills_root() / skill_id / "scripts" / "requirements.txt"
-    if req_installed.is_file():
-
-        def _inject_req(m: re.Match[str]) -> str:
-            chunk = m.group(0)
-            if "--with-requirements" in chunk:
-                return chunk
-            return "uv run --with-requirements ./scripts/requirements.txt python "
-
-        text = re.sub(r"\buv run\s+python\s+", _inject_req, text)
     return text
 
 
