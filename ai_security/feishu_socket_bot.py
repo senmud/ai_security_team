@@ -211,6 +211,78 @@ def _run_child_agent_task(task_id: str, user_text: str, out_q: "mp.Queue[dict[st
         out_q.put({"task_id": task_id, "status": "failed", "error": str(e)})
 
 
+def _skill_install_plan_snapshot(states: dict[int, str], note: str = "") -> str:
+    labels = {
+        1: "准备虚拟环境",
+        2: "安装依赖",
+        3: "语法检查",
+        4: "导入检查",
+    }
+    icon = {
+        "pending": "⏳",
+        "in_progress": "🔄",
+        "completed": "✅",
+        "failed": "❌",
+    }
+    lines: list[str] = []
+    for idx in (1, 2, 3, 4):
+        st = states.get(idx, "pending")
+        lines.append(f"- {icon.get(st, '⏳')} {labels[idx]}（{st}）")
+    if note:
+        lines.append(f"> {note[:300]}")
+    return "\n".join(lines)
+
+
+def _run_skill_install_task(task_id: str, source: str, out_q: "mp.Queue[dict[str, str]]") -> None:
+    """
+    子进程执行 skill 安装，并将安装步骤作为“计划快照”持续回传给主进程。
+    """
+    try:
+        states: dict[int, str] = {1: "pending", 2: "pending", 3: "pending", 4: "pending"}
+        out_q.put({"task_id": task_id, "status": "update", "plan_text": _skill_install_plan_snapshot(states)})
+
+        step_re = re.compile(r"^【自检\s*(\d)/4】([^：:]+)[：:]\s*(.+)$")
+
+        def _on_step(line: str) -> None:
+            text = str(line or "").strip()
+            m = step_re.match(text)
+            note = text
+            if m:
+                idx = int(m.group(1))
+                detail = m.group(3)
+                if "失败" in detail:
+                    states[idx] = "failed"
+                elif "正在" in detail:
+                    states[idx] = "in_progress"
+                elif "成功" in detail or "跳过" in detail:
+                    states[idx] = "completed"
+            out_q.put(
+                {
+                    "task_id": task_id,
+                    "status": "update",
+                    "plan_text": _skill_install_plan_snapshot(states, note=note),
+                }
+            )
+
+        ok, msg = install_skill(source, on_validation_step=_on_step)
+        if ok:
+            for idx in (1, 2, 3, 4):
+                if states[idx] in ("pending", "in_progress"):
+                    states[idx] = "completed"
+            out_q.put(
+                {
+                    "task_id": task_id,
+                    "status": "update",
+                    "plan_text": _skill_install_plan_snapshot(states, note="安装流程已完成"),
+                }
+            )
+            out_q.put({"task_id": task_id, "status": "success", "reply": msg})
+            return
+        out_q.put({"task_id": task_id, "status": "failed", "error": msg})
+    except Exception as e:  # noqa: BLE001
+        out_q.put({"task_id": task_id, "status": "failed", "error": str(e)})
+
+
 @dataclass
 class RunningTask:
     task_id: str
@@ -257,6 +329,31 @@ class TaskRegistry:
             with self._lock:
                 self._tasks.pop(task_id, None)
             raise RuntimeError(f"spawn child agent failed: {e!s}") from e
+        return task_id
+
+    def add_skill_install(self, message_id: str, chat_id: Optional[str], source: str) -> str:
+        task_id = uuid.uuid4().hex[:8]
+        q: "mp.Queue[dict[str, str]]" = mp.Queue()
+        p = mp.Process(target=_run_skill_install_task, args=(task_id, source, q), daemon=True)
+        task = RunningTask(
+            task_id=task_id,
+            description=f"安装skill:{_short_desc(source, max_len=18)}",
+            started_at=time.time(),
+            status="running",
+            plan_snapshot="",
+            message_id=message_id,
+            chat_id=chat_id,
+            process=p,
+            queue=q,
+        )
+        with self._lock:
+            self._tasks[task_id] = task
+        try:
+            p.start()
+        except Exception as e:  # noqa: BLE001
+            with self._lock:
+                self._tasks.pop(task_id, None)
+            raise RuntimeError(f"spawn skill install task failed: {e!s}") from e
         return task_id
 
     def list_lines(self) -> list[str]:
@@ -525,12 +622,18 @@ def main() -> None:
         m_install = re.match(r"^/skill\s+install\s+(.+?)\s*$", tstrip, flags=re.IGNORECASE)
         if m_install:
             source = m_install.group(1).strip()
-
-            def _notify_skill_install_step(line: str) -> None:
-                _send_text(f"**Skill 安装自检**\n{line}")
-
-            ok, msg = install_skill(source, on_validation_step=_notify_skill_install_step)
-            _send_text(msg if ok else f"安装失败：{msg}")
+            try:
+                task_id = registry.add_skill_install(message_id=message_id, chat_id=chat_id, source=source)
+            except Exception as e:  # noqa: BLE001
+                _send_text(f"Skill 子Agent派发失败：{e!s}")
+                return
+            lines = registry.list_lines()
+            _send_text(
+                "Skill 安装任务已派发到子Agent执行。\n"
+                f"任务ID: {task_id}\n\n"
+                "运行中任务列表：\n"
+                + "\n".join(lines)
+            )
             return
 
         if tlower == "/skill" or tlower.startswith("/skill "):
